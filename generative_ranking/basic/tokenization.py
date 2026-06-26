@@ -84,6 +84,31 @@ class SemanticTokenizer(nn.Module):
         self.feature_dims = dict(feature_dims)
         self.group_projections = nn.ModuleDict()
         self.chunk_projection = None
+        self._build_static_projections()
+
+    def _build_static_projections(self):
+        groups = _normalize_groups(self.semantic_groups)
+        if groups:
+            available_names = list(self.feature_dims.keys())
+            for group_name, group_features in groups:
+                resolved = self._resolve_group_features(group_features, available_names)
+                input_dim = sum(int(self.feature_dims[name]) for name in resolved) if resolved else 1
+                safe_name = _sanitize_group_name(group_name)
+                if safe_name not in self.group_projections:
+                    self.group_projections[safe_name] = nn.Linear(input_dim, self.d_model)
+            return
+
+        feature_names = list(self.feature_dims.keys())
+        if not feature_names:
+            return
+        ordered_indices = _assign_semantic_groups(feature_names, self.group_rules)
+        ordered_names = [feature_names[i] for i in ordered_indices]
+        feature_count = len(ordered_names)
+        target_tokens = self.target_tokens if self.target_tokens > 0 else feature_count
+        token_size = int(math.ceil(feature_count / float(target_tokens)))
+        first_dim = int(self.feature_dims[ordered_names[0]])
+        chunk_input_dim = token_size * first_dim
+        self.chunk_projection = nn.Linear(chunk_input_dim, self.d_model)
 
     def _resolve_group_features(self, group_features, available_names):
         resolved = []
