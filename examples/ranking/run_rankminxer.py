@@ -301,6 +301,7 @@ def train_and_eval_dcn_v2(user_features, item_features, dcn_seq_features, train_
 
 def train_and_eval_rankmixer(user_features, item_features, rankmixer_seq_features, semantic_schema, rankmixer_config, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
     seq_pool_modes = rankmixer_config["seq_pool_modes"]
+    use_moe = rankmixer_config["use_moe"]
     model = RankMixer(
         features=user_features + item_features,
         sequence_features=rankmixer_seq_features,
@@ -309,7 +310,7 @@ def train_and_eval_rankmixer(user_features, item_features, rankmixer_seq_feature
         num_tokens=rankmixer_config["num_tokens"],
         semantic_groups=build_rankmixer_semantic_groups(semantic_schema, default_seq_pool_modes=seq_pool_modes),
         seq_pool_modes=seq_pool_modes,
-        use_moe=rankmixer_config["use_moe"],
+        use_moe=use_moe,
         moe_experts=rankmixer_config["moe_experts"],
         moe_l1_coef=rankmixer_config["moe_l1_coef"],
         moe_sparsity_ratio=rankmixer_config["moe_sparsity_ratio"],
@@ -319,11 +320,12 @@ def train_and_eval_rankmixer(user_features, item_features, rankmixer_seq_feature
         token_mixing_dropout=rankmixer_config["token_mixing_dropout"],
         ffn_dropout=rankmixer_config["ffn_dropout"],
         head_dropout=rankmixer_config["head_dropout"],
+        return_moe_loss=use_moe,
     )
     return fit_and_evaluate(
         model_name="rankmixer",
         model=model,
-        loss_mode=False,
+        loss_mode=not use_moe,
         train_dl=train_dl,
         val_dl=val_dl,
         test_dl=test_dl,
