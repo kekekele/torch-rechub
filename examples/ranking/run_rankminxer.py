@@ -1,7 +1,5 @@
 import os
 import sys
-import urllib.request
-import zipfile
 
 import numpy as np
 import pandas as pd
@@ -12,40 +10,20 @@ from tqdm import tqdm
 from torch_rechub.basic.features import SequenceFeature, SparseFeature
 from torch_rechub.models.ranking import DCNv2, RankMixer, build_rankmixer_semantic_groups, normalize_rankmixer_group_schema
 from torch_rechub.trainers import CTRTrainer
-from torch_rechub.utils.data import DataGenerator, df_to_dict, pad_sequences
+from torch_rechub.utils.data import DataGenerator, pad_sequences
 
 sys.path.append("../..")
 
 
-MOVIELENS_1M_URL = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 MOVIELENS_REQUIRED_FILES = ("ratings.dat", "movies.dat", "users.dat")
 
 
-def ensure_movielens_data(data_dir, download=True, overwrite=False):
-    os.makedirs(data_dir, exist_ok=True)
+def ensure_movielens_data(data_dir):
     required_paths = [os.path.join(data_dir, filename) for filename in MOVIELENS_REQUIRED_FILES]
     missing = [path for path in required_paths if not os.path.exists(path)]
-    if not missing and not overwrite:
-        return True
-    if not download:
-        print("Missing MovieLens-1M files:")
-        for path in missing:
-            print(f"  - {path}")
-        return False
-
-    archive_path = os.path.join(data_dir, "ml-1m.zip")
-    if overwrite or not os.path.exists(archive_path):
-        print(f"Downloading MovieLens-1M to {archive_path}")
-        urllib.request.urlretrieve(MOVIELENS_1M_URL, archive_path)
-
-    with zipfile.ZipFile(archive_path, "r") as archive:
-        for filename in MOVIELENS_REQUIRED_FILES:
-            target_path = os.path.join(data_dir, filename)
-            if os.path.exists(target_path) and not overwrite:
-                continue
-            with archive.open(f"ml-1m/{filename}") as src, open(target_path, "wb") as dst:
-                dst.write(src.read())
-    return True
+    if missing:
+        missing_list = "\n".join(f"  - {path}" for path in missing)
+        raise FileNotFoundError(f"MovieLens-1M raw files are required and must already exist:\n{missing_list}")
 
 
 def load_movielens_frames(data_dir):
@@ -134,11 +112,22 @@ def split_rank_samples(samples):
 
 def frame_to_model_input(frame, max_seq_len):
     frame = frame.copy()
-    frame["hist_item_id"] = pad_sequences(frame["hist_item_id"].tolist(), maxlen=max_seq_len, padding="pre", truncating="pre", value=0)
-    frame["hist_genre_id"] = pad_sequences(frame["hist_genre_id"].tolist(), maxlen=max_seq_len, padding="pre", truncating="pre", value=0)
+    hist_item_id = pad_sequences(frame["hist_item_id"].tolist(), maxlen=max_seq_len, padding="pre", truncating="pre", value=0)
+    hist_genre_id = pad_sequences(frame["hist_genre_id"].tolist(), maxlen=max_seq_len, padding="pre", truncating="pre", value=0)
     labels = frame.pop("label").to_numpy(dtype=np.float32)
     frame.drop(columns=["timestamp"], inplace=True)
-    return df_to_dict(frame), labels
+    x_dict = {
+        "user_id": frame["user_id"].to_numpy(dtype=np.int64),
+        "gender": frame["gender"].to_numpy(dtype=np.int64),
+        "age": frame["age"].to_numpy(dtype=np.int64),
+        "occupation": frame["occupation"].to_numpy(dtype=np.int64),
+        "zip": frame["zip"].to_numpy(dtype=np.int64),
+        "target_item_id": frame["target_item_id"].to_numpy(dtype=np.int64),
+        "target_genre_id": frame["target_genre_id"].to_numpy(dtype=np.int64),
+        "hist_item_id": hist_item_id.astype(np.int64),
+        "hist_genre_id": hist_genre_id.astype(np.int64),
+    }
+    return x_dict, labels
 
 
 def build_feature_columns(encoded):
@@ -195,9 +184,8 @@ def build_feature_columns(encoded):
     return user_features, item_features, seq_features, semantic_schema
 
 
-def build_dataloaders(data_dir, max_seq_len, batch_size, download=True, overwrite=False):
-    if not ensure_movielens_data(data_dir, download=download, overwrite=overwrite):
-        raise FileNotFoundError("MovieLens-1M raw files are unavailable.")
+def build_dataloaders(data_dir, max_seq_len, batch_size):
+    ensure_movielens_data(data_dir)
     sparse_cols = ["user_id", "movie_id", "gender", "age", "occupation", "zip", "genre"]
     raw = load_movielens_frames(data_dir)
     encoded, _ = encode_sparse_features(raw, sparse_cols)
@@ -269,15 +257,13 @@ def train_and_eval(model_name, user_features, item_features, seq_features, seman
     return auc
 
 
-def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, device, save_dir, seed, max_seq_len, download, overwrite):
+def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, device, save_dir, seed, max_seq_len):
     torch.manual_seed(seed)
     np.random.seed(seed)
     user_features, item_features, seq_features, semantic_schema, train_dl, val_dl, test_dl = build_dataloaders(
         data_dir=data_dir,
         max_seq_len=max_seq_len,
         batch_size=batch_size,
-        download=download,
-        overwrite=overwrite,
     )
 
     model_names = [model_name] if model_name != "all" else ["dcn_v2", "rankmixer"]
@@ -318,8 +304,6 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", default="./data/ml-1m/saved_rankmixer/")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--max_seq_len", type=int, default=50)
-    parser.add_argument("--download", action="store_true")
-    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     main(
         data_dir=args.data_dir,
@@ -332,6 +316,4 @@ if __name__ == "__main__":
         save_dir=args.save_dir,
         seed=args.seed,
         max_seq_len=args.max_seq_len,
-        download=args.download,
-        overwrite=args.overwrite,
     )
