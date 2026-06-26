@@ -143,7 +143,7 @@ def build_feature_columns(encoded):
         SparseFeature("target_item_id", vocab_size=int(encoded["movie_id"].max()) + 1, embed_dim=embed_dim, padding_idx=0),
         SparseFeature("target_genre_id", vocab_size=int(encoded["genre"].max()) + 1, embed_dim=embed_dim, padding_idx=0),
     ]
-    seq_features = [
+    rankmixer_seq_features = [
         SequenceFeature(
             "hist_item_id",
             vocab_size=int(encoded["movie_id"].max()) + 1,
@@ -161,6 +161,24 @@ def build_feature_columns(encoded):
             padding_idx=0,
         ),
     ]
+    dcn_seq_features = [
+        SequenceFeature(
+            "hist_item_id",
+            vocab_size=int(encoded["movie_id"].max()) + 1,
+            embed_dim=embed_dim,
+            pooling="mean",
+            shared_with="target_item_id",
+            padding_idx=0,
+        ),
+        SequenceFeature(
+            "hist_genre_id",
+            vocab_size=int(encoded["genre"].max()) + 1,
+            embed_dim=embed_dim,
+            pooling="mean",
+            shared_with="target_genre_id",
+            padding_idx=0,
+        ),
+    ]
     semantic_schema = normalize_rankmixer_group_schema([
         {
             "name": "user_profile",
@@ -172,16 +190,16 @@ def build_feature_columns(encoded):
         },
         {
             "name": "sequence_global",
-            "sequence_features": [feature.name for feature in seq_features],
+            "sequence_features": [feature.name for feature in rankmixer_seq_features],
             "pool_modes": ("mean",),
         },
         {
             "name": "sequence_target",
-            "sequence_features": [feature.name for feature in seq_features],
+            "sequence_features": [feature.name for feature in rankmixer_seq_features],
             "pool_modes": ("target",),
         },
     ])
-    return user_features, item_features, seq_features, semantic_schema
+    return user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema
 
 
 def build_dataloaders(data_dir, max_seq_len, batch_size):
@@ -202,15 +220,15 @@ def build_dataloaders(data_dir, max_seq_len, batch_size):
         y_test=test_y,
         batch_size=batch_size,
     )
-    user_features, item_features, seq_features, semantic_schema = build_feature_columns(encoded)
+    user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema = build_feature_columns(encoded)
     print(f"MovieLens-1M ranking samples: train={len(train_y)}, valid={len(val_y)}, test={len(test_y)}")
-    return user_features, item_features, seq_features, semantic_schema, train_dl, val_dl, test_dl
+    return user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema, train_dl, val_dl, test_dl
 
 
-def build_model(model_name, user_features, item_features, seq_features, semantic_schema):
+def build_model(model_name, user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema):
     if model_name == "dcn_v2":
         return DCNv2(
-            features=user_features + item_features + seq_features,
+            features=user_features + item_features + dcn_seq_features,
             n_cross_layers=3,
             mlp_params={"dims": [256, 128], "dropout": 0.2, "activation": "relu"},
         ), True
@@ -218,7 +236,7 @@ def build_model(model_name, user_features, item_features, seq_features, semantic
         seq_pool_modes = ("mean", "target")
         return RankMixer(
             features=user_features + item_features,
-            sequence_features=seq_features,
+            sequence_features=rankmixer_seq_features,
             d_model=128,
             num_layers=2,
             num_tokens=4,
@@ -238,8 +256,15 @@ def build_model(model_name, user_features, item_features, seq_features, semantic
     raise ValueError(f"Unsupported model_name: {model_name}")
 
 
-def train_and_eval(model_name, user_features, item_features, seq_features, semantic_schema, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
-    model, loss_mode = build_model(model_name, user_features, item_features, seq_features, semantic_schema)
+def train_and_eval(model_name, user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
+    model, loss_mode = build_model(
+        model_name,
+        user_features,
+        item_features,
+        dcn_seq_features,
+        rankmixer_seq_features,
+        semantic_schema,
+    )
     model_dir = os.path.join(save_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
     trainer = CTRTrainer(
@@ -260,7 +285,7 @@ def train_and_eval(model_name, user_features, item_features, seq_features, seman
 def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, device, save_dir, seed, max_seq_len):
     torch.manual_seed(seed)
     np.random.seed(seed)
-    user_features, item_features, seq_features, semantic_schema, train_dl, val_dl, test_dl = build_dataloaders(
+    user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema, train_dl, val_dl, test_dl = build_dataloaders(
         data_dir=data_dir,
         max_seq_len=max_seq_len,
         batch_size=batch_size,
@@ -273,7 +298,8 @@ def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, d
             model_name=current_model,
             user_features=user_features,
             item_features=item_features,
-            seq_features=seq_features,
+            dcn_seq_features=dcn_seq_features,
+            rankmixer_seq_features=rankmixer_seq_features,
             semantic_schema=semantic_schema,
             train_dl=train_dl,
             val_dl=val_dl,
