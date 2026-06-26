@@ -1,4 +1,4 @@
-__all__ = ['WideDeep', 'DeepFM', 'DCN', 'DCNv2', 'EDCN', 'AFM', 'FiBiNet', 'DeepFFM', 'BST', 'DIN', 'DIEN', 'FatDeepFFM', 'AutoInt']
+__all__ = ['WideDeep', 'DeepFM', 'DCN', 'DCNv2', 'EDCN', 'AFM', 'FiBiNet', 'DeepFFM', 'BST', 'DIN', 'DIEN', 'FatDeepFFM', 'AutoInt', 'RankMixer', 'SCHEMA_TEMPLATE', 'build_rankmixer_semantic_groups', 'normalize_rankmixer_group_schema']
 
 from .afm import AFM
 from .autoint import AutoInt
@@ -11,4 +11,6 @@ from .dien import DIEN
 from .din import DIN
 from .edcn import EDCN
 from .fibinet import FiBiNet
+from .rankmixer_grouping import SCHEMA_TEMPLATE, build_rankmixer_semantic_groups, normalize_rankmixer_group_schema
+from .rankmixer import RankMixer
 from .widedeep import WideDeep
