@@ -1,28 +1,6 @@
 from collections import OrderedDict
 
 
-SCHEMA_TEMPLATE = [
-    {
-        "name": "user_profile",
-        "features": ["user_id", "gender"],
-    },
-    {
-        "name": "target_item",
-        "features": ["target_item_id", "target_cate_id"],
-    },
-    {
-        "name": "sequence_global",
-        "sequence_features": ["hist_item_id", "hist_cate_id"],
-        "pool_modes": ("mean",),
-    },
-    {
-        "name": "sequence_target",
-        "sequence_features": ["hist_item_id", "hist_cate_id"],
-        "pool_modes": ("target",),
-    },
-]
-
-
 def normalize_rankmixer_group_schema(group_schema, default_seq_pool_modes=("mean",)):
     """Normalize and validate dataset-level semantic group schema.
 

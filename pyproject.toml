@@ -142,7 +142,7 @@ dev = [
 
 # 工具配置
 [tool.hatch.build.targets.wheel]
-packages = ["torch_rechub"]
+packages = ["torch_rechub", "generative_ranking"]
 
 [tool.isort]
 profile = "black"
