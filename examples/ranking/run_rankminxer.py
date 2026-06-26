@@ -16,6 +16,22 @@ sys.path.append("../..")
 
 
 MOVIELENS_REQUIRED_FILES = ("ratings.dat", "movies.dat", "users.dat")
+DEFAULT_RANKMIXER_CONFIG = {
+    "d_model": 128,
+    "num_layers": 2,
+    "num_tokens": 4,
+    "seq_pool_modes": ("mean", "target"),
+    "use_moe": True,
+    "moe_experts": 4,
+    "moe_l1_coef": 1e-4,
+    "moe_sparsity_ratio": 0.5,
+    "moe_use_dtsi": True,
+    "moe_routing_type": "relu_dtsi",
+    "input_dropout": 0.1,
+    "token_mixing_dropout": 0.1,
+    "ffn_dropout": 0.1,
+    "head_dropout": 0.1,
+}
 
 
 def ensure_movielens_data(data_dir):
@@ -225,46 +241,26 @@ def build_dataloaders(data_dir, max_seq_len, batch_size):
     return user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema, train_dl, val_dl, test_dl
 
 
-def build_model(model_name, user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema):
-    if model_name == "dcn_v2":
-        return DCNv2(
-            features=user_features + item_features + dcn_seq_features,
-            n_cross_layers=3,
-            mlp_params={"dims": [256, 128], "dropout": 0.2, "activation": "relu"},
-        ), True
-    if model_name == "rankmixer":
-        seq_pool_modes = ("mean", "target")
-        return RankMixer(
-            features=user_features + item_features,
-            sequence_features=rankmixer_seq_features,
-            d_model=128,
-            num_layers=2,
-            num_tokens=4,
-            semantic_groups=build_rankmixer_semantic_groups(semantic_schema, default_seq_pool_modes=seq_pool_modes),
-            seq_pool_modes=seq_pool_modes,
-            use_moe=True,
-            moe_experts=4,
-            moe_l1_coef=1e-4,
-            moe_sparsity_ratio=0.5,
-            moe_use_dtsi=True,
-            moe_routing_type="relu_dtsi",
-            input_dropout=0.1,
-            token_mixing_dropout=0.1,
-            ffn_dropout=0.1,
-            head_dropout=0.1,
-        ), False
-    raise ValueError(f"Unsupported model_name: {model_name}")
+def build_rankmixer_config(args):
+    rankmixer_config = dict(DEFAULT_RANKMIXER_CONFIG)
+    rankmixer_config.update({
+        "d_model": args.rankmixer_d_model,
+        "num_layers": args.rankmixer_num_layers,
+        "num_tokens": args.rankmixer_num_tokens,
+        "use_moe": args.rankmixer_use_moe,
+        "moe_experts": args.rankmixer_moe_experts,
+        "moe_l1_coef": args.rankmixer_moe_l1_coef,
+        "moe_sparsity_ratio": args.rankmixer_moe_sparsity_ratio,
+        "moe_routing_type": args.rankmixer_moe_routing_type,
+        "input_dropout": args.rankmixer_input_dropout,
+        "token_mixing_dropout": args.rankmixer_token_mixing_dropout,
+        "ffn_dropout": args.rankmixer_ffn_dropout,
+        "head_dropout": args.rankmixer_head_dropout,
+    })
+    return rankmixer_config
 
 
-def train_and_eval(model_name, user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
-    model, loss_mode = build_model(
-        model_name,
-        user_features,
-        item_features,
-        dcn_seq_features,
-        rankmixer_seq_features,
-        semantic_schema,
-    )
+def fit_and_evaluate(model_name, model, loss_mode, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
     model_dir = os.path.join(save_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
     trainer = CTRTrainer(
@@ -282,7 +278,64 @@ def train_and_eval(model_name, user_features, item_features, dcn_seq_features, r
     return auc
 
 
-def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, device, save_dir, seed, max_seq_len):
+def train_and_eval_dcn_v2(user_features, item_features, dcn_seq_features, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
+    model = DCNv2(
+        features=user_features + item_features + dcn_seq_features,
+        n_cross_layers=3,
+        mlp_params={"dims": [256, 128], "dropout": 0.2, "activation": "relu"},
+    )
+    return fit_and_evaluate(
+        model_name="dcn_v2",
+        model=model,
+        loss_mode=True,
+        train_dl=train_dl,
+        val_dl=val_dl,
+        test_dl=test_dl,
+        epoch=epoch,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        device=device,
+        save_dir=save_dir,
+    )
+
+
+def train_and_eval_rankmixer(user_features, item_features, rankmixer_seq_features, semantic_schema, rankmixer_config, train_dl, val_dl, test_dl, epoch, learning_rate, weight_decay, device, save_dir):
+    seq_pool_modes = rankmixer_config["seq_pool_modes"]
+    model = RankMixer(
+        features=user_features + item_features,
+        sequence_features=rankmixer_seq_features,
+        d_model=rankmixer_config["d_model"],
+        num_layers=rankmixer_config["num_layers"],
+        num_tokens=rankmixer_config["num_tokens"],
+        semantic_groups=build_rankmixer_semantic_groups(semantic_schema, default_seq_pool_modes=seq_pool_modes),
+        seq_pool_modes=seq_pool_modes,
+        use_moe=rankmixer_config["use_moe"],
+        moe_experts=rankmixer_config["moe_experts"],
+        moe_l1_coef=rankmixer_config["moe_l1_coef"],
+        moe_sparsity_ratio=rankmixer_config["moe_sparsity_ratio"],
+        moe_use_dtsi=rankmixer_config["moe_use_dtsi"],
+        moe_routing_type=rankmixer_config["moe_routing_type"],
+        input_dropout=rankmixer_config["input_dropout"],
+        token_mixing_dropout=rankmixer_config["token_mixing_dropout"],
+        ffn_dropout=rankmixer_config["ffn_dropout"],
+        head_dropout=rankmixer_config["head_dropout"],
+    )
+    return fit_and_evaluate(
+        model_name="rankmixer",
+        model=model,
+        loss_mode=False,
+        train_dl=train_dl,
+        val_dl=val_dl,
+        test_dl=test_dl,
+        epoch=epoch,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        device=device,
+        save_dir=save_dir,
+    )
+
+
+def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, device, save_dir, seed, max_seq_len, rankmixer_config):
     torch.manual_seed(seed)
     np.random.seed(seed)
     user_features, item_features, dcn_seq_features, rankmixer_seq_features, semantic_schema, train_dl, val_dl, test_dl = build_dataloaders(
@@ -291,16 +344,28 @@ def main(data_dir, model_name, epoch, learning_rate, batch_size, weight_decay, d
         batch_size=batch_size,
     )
 
-    model_names = [model_name] if model_name != "all" else ["dcn_v2", "rankmixer"]
     auc_results = {}
-    for current_model in model_names:
-        auc_results[current_model] = train_and_eval(
-            model_name=current_model,
+    if model_name in ("all", "dcn_v2"):
+        auc_results["dcn_v2"] = train_and_eval_dcn_v2(
             user_features=user_features,
             item_features=item_features,
             dcn_seq_features=dcn_seq_features,
+            train_dl=train_dl,
+            val_dl=val_dl,
+            test_dl=test_dl,
+            epoch=epoch,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            device=device,
+            save_dir=save_dir,
+        )
+    if model_name in ("all", "rankmixer"):
+        auc_results["rankmixer"] = train_and_eval_rankmixer(
+            user_features=user_features,
+            item_features=item_features,
             rankmixer_seq_features=rankmixer_seq_features,
             semantic_schema=semantic_schema,
+            rankmixer_config=rankmixer_config,
             train_dl=train_dl,
             val_dl=val_dl,
             test_dl=test_dl,
@@ -330,7 +395,23 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", default="./data/ml-1m/saved_rankmixer/")
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--max_seq_len", type=int, default=50)
+    parser.add_argument("--rankmixer_d_model", type=int, default=DEFAULT_RANKMIXER_CONFIG["d_model"])
+    parser.add_argument("--rankmixer_num_layers", type=int, default=DEFAULT_RANKMIXER_CONFIG["num_layers"])
+    parser.add_argument("--rankmixer_num_tokens", type=int, default=DEFAULT_RANKMIXER_CONFIG["num_tokens"])
+    parser.add_argument("--rankmixer_use_moe", dest="rankmixer_use_moe", action="store_true")
+    parser.add_argument("--rankmixer_no_moe", dest="rankmixer_use_moe", action="store_false")
+    parser.set_defaults(rankmixer_use_moe=DEFAULT_RANKMIXER_CONFIG["use_moe"])
+    parser.add_argument("--rankmixer_moe_experts", type=int, default=DEFAULT_RANKMIXER_CONFIG["moe_experts"])
+    parser.add_argument("--rankmixer_moe_l1_coef", type=float, default=DEFAULT_RANKMIXER_CONFIG["moe_l1_coef"])
+    parser.add_argument("--rankmixer_moe_sparsity_ratio", type=float, default=DEFAULT_RANKMIXER_CONFIG["moe_sparsity_ratio"])
+    parser.add_argument("--rankmixer_moe_routing_type", default=DEFAULT_RANKMIXER_CONFIG["moe_routing_type"])
+    parser.add_argument("--rankmixer_input_dropout", type=float, default=DEFAULT_RANKMIXER_CONFIG["input_dropout"])
+    parser.add_argument("--rankmixer_token_mixing_dropout", type=float, default=DEFAULT_RANKMIXER_CONFIG["token_mixing_dropout"])
+    parser.add_argument("--rankmixer_ffn_dropout", type=float, default=DEFAULT_RANKMIXER_CONFIG["ffn_dropout"])
+    parser.add_argument("--rankmixer_head_dropout", type=float, default=DEFAULT_RANKMIXER_CONFIG["head_dropout"])
     args = parser.parse_args()
+    rankmixer_config = build_rankmixer_config(args)
+    print(f"RankMixer config: {rankmixer_config}")
     main(
         data_dir=args.data_dir,
         model_name=args.model_name,
@@ -342,4 +423,5 @@ if __name__ == "__main__":
         save_dir=args.save_dir,
         seed=args.seed,
         max_seq_len=args.max_seq_len,
+        rankmixer_config=rankmixer_config,
     )
