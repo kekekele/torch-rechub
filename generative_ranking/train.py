@@ -243,7 +243,7 @@ def main():
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
     bootstrap_parser.add_argument("--config", default="movielens")
     bootstrap_args, _ = bootstrap_parser.parse_known_args()
-    default_config = load_config(bootstrap_args.config)
+    default_config = load_config(bootstrap_args.config, profile="train")
 
     parser = build_parser(default_config)
     args = parser.parse_args()

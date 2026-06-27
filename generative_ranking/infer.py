@@ -47,13 +47,13 @@ def build_parser(default_config):
     )
     parser.add_argument(
         "--split",
-        default="test",
+        default=_config_default(default_config, "split", fallback="test"),
         choices=["train", "val", "test"],
         help="Dataset split used for evaluation and optional prediction export.",
     )
     parser.add_argument(
         "--output_path",
-        default=None,
+        default=_config_default(default_config, "output_path"),
         help="Optional CSV path for prediction export. When omitted, only AUC is printed.",
     )
     parser.add_argument(
@@ -107,7 +107,7 @@ def main():
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
     bootstrap_parser.add_argument("--config", default="movielens")
     bootstrap_args, _ = bootstrap_parser.parse_known_args()
-    default_config = load_config(bootstrap_args.config)
+    default_config = load_config(bootstrap_args.config, profile="infer")
 
     parser = build_parser(default_config)
     args = parser.parse_args()

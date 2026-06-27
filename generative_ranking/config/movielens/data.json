@@ -1,0 +1,120 @@
+{
+  "dataset": "movielens",
+  "dataset_display_name": "MovieLens-1M",
+  "data_dir": "./generative_ranking/data/ml-1m/",
+  "source": {
+    "base_table": "interactions",
+    "tables": {
+      "interactions": {
+        "path": "seq.csv",
+        "read_csv": {
+          "sep": ",",
+          "header": 0,
+          "encoding": "utf-8"
+        },
+        "select_columns": ["user_id", "movie_id", "timestamp", "label"]
+      },
+      "users": {
+        "path": "user_info.csv",
+        "read_csv": {
+          "sep": ",",
+          "header": 0,
+          "encoding": "utf-8"
+        }
+      },
+      "items": {
+        "path": "item_fea.csv",
+        "read_csv": {
+          "sep": ",",
+          "header": 0,
+          "encoding": "utf-8"
+        },
+        "select_columns": ["movie_id", "genre"]
+      }
+    },
+    "joins": [
+      {
+        "right_table": "users",
+        "left_on": "user_id",
+        "right_on": "user_id",
+        "how": "left"
+      },
+      {
+        "right_table": "items",
+        "left_on": "movie_id",
+        "right_on": "movie_id",
+        "how": "left"
+      }
+    ],
+    "select_columns": ["user_id", "movie_id", "gender", "age", "occupation", "zip", "genre", "timestamp", "label"]
+  },
+  "dataset_params": {
+    "max_seq_len": 50
+  },
+  "sample_builder": {
+    "user_id_col": "user_id",
+    "timestamp_col": "timestamp",
+    "label_col": "label",
+    "max_seq_len": 50,
+    "history_filter": {
+      "positive_only": true
+    },
+    "split": {
+      "type": "global_time_ratio",
+      "ratios": [0.8, 0.1, 0.1]
+    }
+  },
+  "features": {
+    "user_sparse": ["user_id", "gender", "age", "occupation", "zip"],
+    "user_dense": [],
+    "item_sparse": [
+      {
+        "name": "target_item_id",
+        "source": "movie_id"
+      },
+      {
+        "name": "target_genre_id",
+        "source": "genre"
+      }
+    ],
+    "item_dense": [],
+    "sequence": [
+      {
+        "name": "hist_item_id",
+        "source": "movie_id",
+        "shared_with": "target_item_id",
+        "rankmixer_pooling": "concat",
+        "dcn_pooling": "mean"
+      },
+      {
+        "name": "hist_genre_id",
+        "source": "genre",
+        "shared_with": "target_genre_id",
+        "rankmixer_pooling": "concat",
+        "dcn_pooling": "mean"
+      }
+    ],
+    "embedding_dim": 16,
+    "padding_idx": 0
+  },
+  "semantic_schema": [
+    {
+      "name": "user_profile",
+      "features": ["user_id", "gender", "age", "occupation", "zip"]
+    },
+    {
+      "name": "target_item",
+      "features": ["target_item_id", "target_genre_id"]
+    },
+    {
+      "name": "sequence_global",
+      "sequence_features": ["hist_item_id", "hist_genre_id"],
+      "pool_modes": ["mean"]
+    },
+    {
+      "name": "sequence_target",
+      "sequence_features": ["hist_item_id", "hist_genre_id"],
+      "pool_modes": ["target"]
+    }
+  ]
+}

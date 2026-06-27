@@ -1,8 +1,8 @@
-from .movielens import prepare_movielens_dataset
+from .dataset import prepare_three_table_dataset_from_config
 
 
 def prepare_dataset(config):
-    dataset_name = str(config["dataset"]).lower()
-    if dataset_name in {"movielens", "ml-1m", "ml1m"}:
-        return prepare_movielens_dataset(config)
+    if config.get("source", {}).get("tables"):
+        display_name = str(config.get("dataset_display_name", config["dataset"]))
+        return prepare_three_table_dataset_from_config(config, dataset_name=display_name, desc=f"build {display_name.lower()} ranking samples")
     raise ValueError(f"Unsupported dataset={config['dataset']}")

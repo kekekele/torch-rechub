@@ -1,0 +1,8 @@
+{
+  "model_name": "rankmixer",
+  "device": "npu",
+  "seed": 2026,
+  "save_dir": "./generative_ranking/outputs/movielens/",
+  "split": "test",
+  "output_path": null
+}
