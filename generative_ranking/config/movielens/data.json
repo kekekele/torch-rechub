@@ -12,14 +12,15 @@
           "header": 0,
           "encoding": "utf-8"
         },
-        "select_columns": ["user_id", "movie_id", "timestamp", "label"]
+        "select_columns": ["uid", "iid", "timestamp", "label"]
       },
       "users": {
         "path": "user_info.csv",
         "read_csv": {
           "sep": ",",
           "header": 0,
-          "encoding": "utf-8"
+          "encoding": "utf-8",
+           "select_columns": ["uid", "gender", "age", "occupation", "zip_code"]
         }
       },
       "items": {
@@ -29,33 +30,33 @@
           "header": 0,
           "encoding": "utf-8"
         },
-        "select_columns": ["movie_id", "title", "release_year", "genres"]
+        "select_columns": ["iid", "title", "genres"]
       }
     },
     "joins": [
       {
         "right_table": "users",
-        "left_on": "user_id",
-        "right_on": "user_id",
+        "left_on": "uid",
+        "right_on": "uid",
         "how": "left"
       },
       {
         "right_table": "items",
-        "left_on": "movie_id",
-        "right_on": "movie_id",
+        "left_on": "iid",
+        "right_on": "iid",
         "how": "left"
       }
     ],
-    "select_columns": ["user_id", "movie_id", "gender", "age", "occupation", "zip", "title", "release_year", "genres", "timestamp", "label"]
+    "select_columns": ["uid", "iid", "gender", "age", "occupation", "zip_code", "title", "genres", "timestamp", "label"]
   },
   "dataset_params": {
-    "max_seq_len": 50
+    "max_seq_len": 101
   },
   "sample_builder": {
-    "user_id_col": "user_id",
+    "user_id_col": "uid",
     "timestamp_col": "timestamp",
     "label_col": "label",
-    "max_seq_len": 50,
+    "max_seq_len": 101,
     "history_filter": {
       "positive_only": true
     },
@@ -65,23 +66,15 @@
     }
   },
   "features": {
-    "user_sparse": ["user_id", "gender", "age", "occupation", "zip"],
+    "user_sparse": ["user_id", "gender", "age", "occupation", "zip_code"],
     "user_dense": [],
     "item_sparse": [
       {
         "name": "target_item_id",
-        "source": "movie_id"
-      },
-      {
-        "name": "target_title",
-        "source": "title"
+        "source": "iid"
       }
     ],
     "item_dense": [
-      {
-        "name": "target_release_year",
-        "source": "release_year"
-      }
     ],
     "item_sequence": [
       {
@@ -95,7 +88,7 @@
     "sequence": [
       {
         "name": "hist_item_id",
-        "source": "movie_id",
+        "source": "iid",
         "shared_with": "target_item_id",
         "rankmixer_pooling": "concat",
         "dcn_pooling": "mean"
@@ -107,11 +100,11 @@
   "semantic_schema": [
     {
       "name": "user_profile",
-      "features": ["user_id", "gender", "age", "occupation", "zip"]
+      "features": ["uid", "gender", "age", "occupation", "zip_code"]
     },
     {
       "name": "target_item",
-      "features": ["target_item_id", "target_title", "target_release_year", "target_genres"]
+      "features": ["target_item_id", "target_genres"]
     },
     {
       "name": "sequence_global",

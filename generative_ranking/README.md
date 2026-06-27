@@ -279,11 +279,13 @@ python -m generative_ranking.infer --config movielens --model_name rankmixer --o
 当前输出 CSV 格式为：
 
 ```csv
-index,prediction
-0,0.8123
-1,0.1034
+rank,prediction,target_item_id,user_id,timestamp,label,...
+1,0.8123,128,42,978300760,1,...
+2,0.7991,531,42,978300763,0,...
 ...
 ```
+
+输出会按 `prediction` 从高到低排序，便于直接查看候选结果排序。
 
 ### 5.3 指标如何计算
 

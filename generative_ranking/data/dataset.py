@@ -284,6 +284,34 @@ def split_samples(samples, spec):
     return train, val, test
 
 
+def build_prediction_records(frame, spec):
+    sample_cfg = spec["sample_builder"]
+    label_col = sample_cfg["label_col"]
+    timestamp_col = sample_cfg["timestamp_col"]
+
+    records = frame.copy().reset_index(drop=True)
+    feature_cfg = spec["features"]
+    key_columns = []
+    for feature in feature_cfg["user_sparse"] + feature_cfg["user_dense"] + feature_cfg["item_sparse"] + feature_cfg["item_dense"]:
+        if feature["name"] not in key_columns:
+            key_columns.append(feature["name"])
+    for feature in feature_cfg["item_sequence"] + feature_cfg["sequence"]:
+        if feature["name"] not in key_columns:
+            key_columns.append(feature["name"])
+
+    export_columns = []
+    for column in key_columns + [timestamp_col, label_col]:
+        if column in records.columns and column not in export_columns:
+            export_columns.append(column)
+
+    result = records[export_columns].copy()
+    for column in result.columns:
+        result[column] = result[column].apply(
+            lambda value: ",".join(map(str, value)) if isinstance(value, list) else value
+        )
+    return result
+
+
 def frame_to_model_input(frame, spec):
     sample_cfg = spec["sample_builder"]
     feature_cfg = spec["features"]
@@ -408,6 +436,9 @@ def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="bui
     encoded = encode_sequence_features(encoded, feature_cfg["item_sequence"])
     samples = build_sequence_samples(encoded, spec, desc=desc)
     train, val, test = split_samples(samples, spec)
+    train_records = build_prediction_records(train, spec)
+    val_records = build_prediction_records(val, spec)
+    test_records = build_prediction_records(test, spec)
     train_x, train_y = frame_to_model_input(train, spec)
     val_x, val_y = frame_to_model_input(val, spec)
     test_x, test_y = frame_to_model_input(test, spec)
@@ -426,6 +457,9 @@ def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="bui
         "train_dl": train_dl,
         "val_dl": val_dl,
         "test_dl": test_dl,
+        "train_records": train_records,
+        "val_records": val_records,
+        "test_records": test_records,
         "dcn_v2_features": dcn_base_features + dcn_seq_features,
         "rankmixer_features": rankmixer_base_features,
         "rankmixer_sequence_features": rankmixer_seq_features,

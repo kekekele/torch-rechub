@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from ..basic.features import DenseFeature, SparseFeature
+from ..basic.features import DenseFeature, SparseFeature, SequenceFeature
 from ..basic.layers import EmbeddingLayer
 from ..basic.layer_norm import LayerNorm
 from ..basic.per_token_ffn import PerTokenFFN, gelu

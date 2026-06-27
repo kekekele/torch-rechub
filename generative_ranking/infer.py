@@ -3,6 +3,7 @@ import csv
 import os
 
 import torch
+import pandas as pd
 
 from .train import CTRTrainer
 from .util import ensure_dir, load_config, set_seed
@@ -103,6 +104,24 @@ def resolve_checkpoint_path(args, config):
     return os.path.join(config["save_dir"], args.model_name, "model.pth")
 
 
+def build_ranked_output(records, predictions):
+    if len(records) != len(predictions):
+        raise ValueError(
+            f"Prediction count mismatch: records={len(records)} predictions={len(predictions)}."
+        )
+    output = records.copy().reset_index(drop=True)
+    output.insert(0, "rank", range(1, len(output) + 1))
+    output["prediction"] = predictions
+    output = output.sort_values("prediction", ascending=False).reset_index(drop=True)
+    output["rank"] = output.index + 1
+    return output
+
+
+def save_ranked_output(output, output_path):
+    ensure_dir(os.path.dirname(output_path) or ".")
+    output.to_csv(output_path, index=False, encoding="utf-8")
+
+
 def main():
     bootstrap_parser = argparse.ArgumentParser(add_help=False)
     bootstrap_parser.add_argument("--config", default="movielens")
@@ -130,17 +149,17 @@ def main():
     model.load_state_dict(state_dict)
     trainer = CTRTrainer(model, n_epoch=1, device=config["device"], loss_mode=loss_mode, model_path=ensure_dir(os.path.dirname(checkpoint_path) or "."))
     split_key = f"{args.split}_dl"
+    record_key = f"{args.split}_records"
     data_loader = bundle[split_key]
     predictions = trainer.predict(trainer.model, data_loader)
     auc = trainer.evaluate(trainer.model, data_loader)
     print(f"{args.model_name} {args.split} auc: {auc:.6f}")
     if args.output_path:
-        ensure_dir(os.path.dirname(args.output_path) or ".")
-        with open(args.output_path, "w", newline="", encoding="utf-8") as fw:
-            writer = csv.writer(fw)
-            writer.writerow(["index", "prediction"])
-            for index, prediction in enumerate(predictions):
-                writer.writerow([index, prediction])
+        records = bundle.get(record_key)
+        if records is None:
+            raise ValueError(f"Missing prediction records for split '{args.split}'.")
+        ranked_output = build_ranked_output(records, predictions)
+        save_ranked_output(ranked_output, args.output_path)
         print(f"Saved predictions to {args.output_path}")
 
 
