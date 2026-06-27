@@ -26,7 +26,11 @@ def _resolve_table_path(data_dir, table_cfg):
     path = table_cfg.get("path")
     if not path:
         raise ValueError(f"Table config must define path: {table_cfg}")
-    return str(pd.io.common.stringify_path(f"{data_dir.rstrip('/\\')}/{path}" if data_dir else path))
+    if not data_dir:
+        return str(pd.io.common.stringify_path(path))
+    normalized_dir = str(data_dir).rstrip("/\\")
+    combined_path = f"{normalized_dir}/{path}"
+    return str(pd.io.common.stringify_path(combined_path))
 
 
 def _normalize_read_csv_kwargs(table_cfg):
@@ -150,6 +154,7 @@ def _normalize_sequence_entry(entry):
     normalized["shared_with"] = normalized.get("shared_with")
     normalized["rankmixer_pooling"] = str(normalized.get("rankmixer_pooling", "concat")).lower()
     normalized["dcn_pooling"] = str(normalized.get("dcn_pooling", "mean")).lower()
+    normalized["value_sep"] = str(normalized.get("value_sep", ","))
     return normalized
 
 
@@ -181,6 +186,7 @@ def normalize_three_table_spec(config):
             "user_dense": [_normalize_feature_entry(item) for item in feature_cfg.get("user_dense", [])],
             "item_sparse": [_normalize_feature_entry(item) for item in feature_cfg.get("item_sparse", [])],
             "item_dense": [_normalize_feature_entry(item) for item in feature_cfg.get("item_dense", [])],
+            "item_sequence": [_normalize_sequence_entry(item) for item in feature_cfg.get("item_sequence", [])],
             "sequence": [_normalize_sequence_entry(item) for item in feature_cfg.get("sequence", [])],
             "embedding_dim": int(feature_cfg.get("embedding_dim", 16)),
             "padding_idx": feature_cfg.get("padding_idx", 0),
@@ -188,6 +194,17 @@ def normalize_three_table_spec(config):
         "semantic_schema": semantic_schema,
     }
     return normalized
+
+
+def _split_multi_value(value, separator=","):
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+    return [item.strip() for item in text.split(separator) if item.strip()]
 
 
 def encode_tabular_features(data, sparse_cols, dense_cols=None, label_col="label", timestamp_col="timestamp"):
@@ -202,6 +219,18 @@ def encode_tabular_features(data, sparse_cols, dense_cols=None, label_col="label
     return encoded
 
 
+def encode_sequence_features(data, sequence_specs):
+    encoded = data.copy()
+    for feature in sequence_specs:
+        source = feature["source"]
+        separator = feature.get("value_sep", ",")
+        token_lists = encoded[source].apply(lambda value: _split_multi_value(value, separator=separator))
+        tokens = sorted({token for items in token_lists for token in items})
+        token_to_index = {token: idx + 1 for idx, token in enumerate(tokens)}
+        encoded[source] = token_lists.apply(lambda items: [token_to_index[token] for token in items])
+    return encoded
+
+
 def build_sequence_samples(data, spec, desc="build ranking samples"):
     sample_cfg = spec["sample_builder"]
     feature_cfg = spec["features"]
@@ -212,7 +241,7 @@ def build_sequence_samples(data, spec, desc="build ranking samples"):
     history_positive_only = sample_cfg["history_positive_only"]
 
     user_feature_specs = feature_cfg["user_sparse"] + feature_cfg["user_dense"]
-    item_feature_specs = feature_cfg["item_sparse"] + feature_cfg["item_dense"]
+    item_feature_specs = feature_cfg["item_sparse"] + feature_cfg["item_dense"] + feature_cfg["item_sequence"]
     sequence_specs = feature_cfg["sequence"]
 
     samples = []
@@ -272,6 +301,14 @@ def frame_to_model_input(frame, spec):
         x_dict[feature["name"]] = frame[feature["name"]].to_numpy(dtype=np.int64)
     for feature in feature_cfg["user_dense"] + feature_cfg["item_dense"]:
         x_dict[feature["name"]] = frame[feature["name"]].to_numpy(dtype=np.float32)
+    for feature in feature_cfg["item_sequence"]:
+        x_dict[feature["name"]] = pad_sequences(
+            frame[feature["name"]].tolist(),
+            maxlen=max_seq_len,
+            padding="pre",
+            truncating="pre",
+            value=feature_cfg["padding_idx"],
+        ).astype(np.int64)
     for feature in feature_cfg["sequence"]:
         x_dict[feature["name"]] = pad_sequences(
             frame[feature["name"]].tolist(),
@@ -298,6 +335,19 @@ def build_feature_columns(encoded, spec):
         for feature in feature_cfg["item_sparse"]
     ]
     item_dense_features = [DenseFeature(feature["name"]) for feature in feature_cfg["item_dense"]]
+    item_sequence_features = []
+    for feature in feature_cfg["item_sequence"]:
+        vocab_size = max((max(items) for items in encoded[feature["source"]] if items), default=0) + 1
+        item_sequence_features.append(
+            SequenceFeature(
+                feature["name"],
+                vocab_size=vocab_size,
+                embed_dim=embed_dim,
+                pooling=feature["rankmixer_pooling"],
+                shared_with=feature.get("shared_with"),
+                padding_idx=padding_idx,
+            )
+        )
 
     rankmixer_seq_features = []
     dcn_seq_features = []
@@ -324,8 +374,22 @@ def build_feature_columns(encoded, spec):
             )
         )
 
-    base_features = user_features + user_dense_features + item_features + item_dense_features
-    return base_features, dcn_seq_features, rankmixer_seq_features, spec["semantic_schema"]
+    rankmixer_item_sequence_features = item_sequence_features
+    dcn_item_sequence_features = [
+        SequenceFeature(
+            feature["name"],
+            vocab_size=current_feature.vocab_size,
+            embed_dim=embed_dim,
+            pooling=feature["dcn_pooling"],
+            shared_with=feature.get("shared_with"),
+            padding_idx=padding_idx,
+        )
+        for feature, current_feature in zip(feature_cfg["item_sequence"], item_sequence_features)
+    ]
+
+    rankmixer_base_features = user_features + user_dense_features + item_features + item_dense_features + rankmixer_item_sequence_features
+    dcn_base_features = user_features + user_dense_features + item_features + item_dense_features + dcn_item_sequence_features
+    return dcn_base_features, rankmixer_base_features, dcn_seq_features, rankmixer_seq_features, spec["semantic_schema"]
 
 
 def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="build ranking samples"):
@@ -341,6 +405,7 @@ def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="bui
         label_col=sample_cfg["label_col"],
         timestamp_col=sample_cfg["timestamp_col"],
     )
+    encoded = encode_sequence_features(encoded, feature_cfg["item_sequence"])
     samples = build_sequence_samples(encoded, spec, desc=desc)
     train, val, test = split_samples(samples, spec)
     train_x, train_y = frame_to_model_input(train, spec)
@@ -354,15 +419,15 @@ def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="bui
         y_test=test_y,
         batch_size=config["training"]["batch_size"],
     )
-    base_features, dcn_seq_features, rankmixer_seq_features, semantic_schema = build_feature_columns(encoded, spec)
+    dcn_base_features, rankmixer_base_features, dcn_seq_features, rankmixer_seq_features, semantic_schema = build_feature_columns(encoded, spec)
     print(f"{dataset_name} ranking samples: train={len(train_y)}, valid={len(val_y)}, test={len(test_y)}")
     return {
         "dataset": str(config["dataset"]),
         "train_dl": train_dl,
         "val_dl": val_dl,
         "test_dl": test_dl,
-        "dcn_v2_features": base_features + dcn_seq_features,
-        "rankmixer_features": base_features,
+        "dcn_v2_features": dcn_base_features + dcn_seq_features,
+        "rankmixer_features": rankmixer_base_features,
         "rankmixer_sequence_features": rankmixer_seq_features,
         "semantic_schema": semantic_schema,
     }

@@ -74,7 +74,8 @@ class RankMixer(nn.Module):
         self.sequence_features = sequence_features or []
         self.sparse_features = [fea for fea in self.features if isinstance(fea, SparseFeature)]
         self.dense_features = [fea for fea in self.features if isinstance(fea, DenseFeature)]
-        self.embedding_features = self.sparse_features + list(self.sequence_features)
+        self.context_sequence_features = [fea for fea in self.features if isinstance(fea, SequenceFeature)]
+        self.embedding_features = self.sparse_features + self.context_sequence_features + list(self.sequence_features)
         self.embedding = EmbeddingLayer(self.embedding_features) if self.embedding_features else None
         self.seq_pool_modes = [str(mode).lower() for mode in seq_pool_modes]
         self.include_seq_in_tokenization = bool(include_seq_in_tokenization)
@@ -92,6 +93,8 @@ class RankMixer(nn.Module):
         for fea in self.sparse_features:
             self._register_feature_projector(fea.name, fea.embed_dim)
         for fea in self.dense_features:
+            self._register_feature_projector(fea.name, fea.embed_dim)
+        for fea in self.context_sequence_features:
             self._register_feature_projector(fea.name, fea.embed_dim)
         for fea in self.sequence_features:
             for mode in self.seq_pool_modes:
@@ -166,6 +169,13 @@ class RankMixer(nn.Module):
         for fea in self.dense_features:
             dense = x[fea.name].float()
             feature_map[fea.name] = self._project_feature(fea.name, dense if dense.dim() > 1 else dense.unsqueeze(1))
+        for fea in self.context_sequence_features:
+            if fea.pooling == "concat":
+                raise ValueError("RankMixer item/context SequenceFeature does not support pooling='concat'; use mean/sum/max/target.")
+            seq_emb = self._get_embedding_layer(fea)(x[fea.name].long())
+            mask = self._sequence_mask(fea, x)
+            pooled = self._pool_sequence(seq_emb, mask, fea.pooling)
+            feature_map[fea.name] = self._project_feature(fea.name, pooled)
         seq_feature_map = {}
         for fea in self.sequence_features:
             if fea.pooling != "concat":

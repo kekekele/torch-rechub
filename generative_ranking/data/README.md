@@ -1,272 +1,349 @@
-# generative_ranking 数据设计
+# generative_ranking 数据协议
 
-该目录用于存放独立 `generative_ranking` 包所需的数据集文件。
+该目录文档用于说明 `generative_ranking` 当前采用的最终数据协议。
 
-当前内置数据集：
+目标是让不同数据集在满足统一三表格式和统一配置契约的前提下，只通过配置即可接入训练与推理流程，而不再依赖数据集专用读取脚本。
 
-- MovieLens-1M 目标三表文件：`generative_ranking/data/ml-1m/user_info.csv`、`item_fea.csv`、`seq.csv`
+## 1. 数据目标格式
 
-也可以在 `python -m generative_ranking.train` 或 `python -m generative_ranking.infer` 中通过 CLI 参数覆盖 `data_dir`。
+当前推荐使用统一三表格式：
 
-## 目标
+- `user_info.csv`
+- `item_fea.csv`
+- `seq.csv`
 
-目标数据抽象是一套统一的三表范式：
+概念上分别对应：
 
-- `user_info.csv`：每行一个用户，例如 `uid, age, gender, ...`
-- `item_fea.csv`：每行一个物品，例如 `iid, category, brand, ...`
-- `seq.csv`：每行一条交互，例如 `uid, iid, timestamp, action, ...`
+- 用户表：每行一个用户及其静态特征
+- 物品表：每行一个物品及其静态特征
+- 交互表：每行一条用户与物品的行为记录
 
-工程目标是在保持训练和推理入口不变的前提下，仅通过修改配置切换数据集。
+一个典型的数据目录结构如下：
 
-## 可行性结论
+```text
+<your_data_dir>/
+  user_info.csv
+  item_fea.csv
+  seq.csv
+```
 
-对于 CTR 或二分类 ranking 数据集，只要满足以下三个条件，这套方案就是可行的：
+这三张表不要求固定列名，但要求列名、join key、标签字段和时间字段能够通过 `data.json` 正确描述。
 
-1. 用户、物品、交互数据都能归一化到三表结构中。
-2. 监督标签可以通过声明式的规则从交互记录中推导出来。
-3. 特征工程保持在声明式范围内，例如类别编码、稠密特征直通、序列截断以及语义分组。
+## 2. 数据层输出契约
 
-如果数据集需要自定义文本处理、图像特征、复杂跨表聚合、多任务监督，或者非标准的 session 重建逻辑，那么这套方案就不能做到完全“只改配置”。
-
-## 统一数据契约
-
-数据层应输出与当前模型已使用的同一套 bundle 结构：
+数据层最终需要输出下面这类 bundle 结构，供训练和推理入口复用：
 
 ```python
 {
-	"dataset": "...",
-	"train_dl": train_dl,
-	"val_dl": val_dl,
-	"test_dl": test_dl,
-	"dcn_v2_features": [...],
-	"rankmixer_features": [...],
-	"rankmixer_sequence_features": [...],
-	"semantic_schema": [...],
+    "dataset": "...",
+    "train_dl": train_dl,
+    "val_dl": val_dl,
+    "test_dl": test_dl,
+    "dcn_v2_features": [...],
+    "rankmixer_features": [...],
+    "rankmixer_sequence_features": [...],
+    "semantic_schema": [...],
 }
 ```
 
-只要某个数据集适配器能够返回这套结构，当前的 model factory、trainer 和 inference 入口就不需要再写数据集分支。
+只要某个数据集最终能产出这套结构，模型构建、训练和推理流程就不需要再写数据集特判。
 
-## 分层设计
+## 3. 数据构建流程
 
-这套统一范式建议拆分为四层。
+当前数据构建逻辑由 `dataset.py` 负责，整体流程如下：
 
-### 1. 数据源层
+1. 读取 `source.tables` 中定义的原始表。
+2. 按 `source.joins` 规则将用户表、物品表与交互表 merge 成统一交互表。
+3. 应用单表或 merge 后的字段变换规则。
+4. 根据 `sample_builder` 构造监督样本和历史序列。
+5. 按时间顺序切分 `train / val / test`。
+6. 根据 `features` 生成模型输入特征定义。
+7. 根据 `semantic_schema` 生成 RankMixer 语义分组。
 
-这一层负责读取三张源表，并完成字段名归一化。
+## 4. data.json 结构说明
 
-必须承担的职责：
+每个数据集目录下推荐至少提供一份 `data.json`，用于描述数据协议。
 
-- 读取 `user_info`、`item_fea` 和 `seq`
-- 应用文件格式设置，例如 `sep`、`header`、`encoding`
-- 将数据集自有列名映射为统一语义角色
-- 校验用户 ID、物品 ID、时间戳等关键字段是否存在
-
-建议的配置字段：
-
-```python
-"source": {
-	"user_table": {"path": "user_info.csv", "sep": ",", "encoding": "utf-8"},
-	"item_table": {"path": "item_fea.csv", "sep": ",", "encoding": "utf-8"},
-	"interaction_table": {"path": "seq.csv", "sep": ",", "encoding": "utf-8"},
-	"columns": {
-		"user_id": "uid",
-		"item_id": "iid",
-		"timestamp": "timestamp",
-		"action": "action",
-	},
-}
-```
-
-这一层的输出是三个标准化后的 DataFrame：
-
-- `users_df`
-- `items_df`
-- `interactions_df`
-
-### 2. 样本构造层
-
-这一层负责将交互日志转换成监督式 ranking 样本。
-
-必须承担的职责：
-
-- 按用户和时间对交互排序
-- 定义哪些行为会进入历史序列
-- 定义标签如何生成
-- 构造 target 字段和历史序列字段
-- 将样本切分为 train、val、test
-
-建议的配置字段：
-
-```python
-"sample_builder": {
-	"max_seq_len": 50,
-	"label_rule": {"type": "expr", "expr": "action in ['click', 'buy']"},
-	"history_filter": {"positive_only": True},
-	"target_item_col": "iid",
-	"sort_by": ["uid", "timestamp"],
-	"split": {"type": "global_time_ratio", "ratios": [0.8, 0.1, 0.1]},
-}
-```
-
-标准化后的样本表在概念上应类似如下结构：
+典型位置：
 
 ```text
-label, timestamp,
-user-side static features ...,
-target item features ...,
-hist_item_id, hist_category_id, hist_brand_id, ...
+config/<dataset_name>/data.json
 ```
 
-当前 MovieLens 已经切换到统一三表协议，不再依赖专用读取脚本。
+当前 `data.json` 主要包含以下部分：
 
-### 3. 特征声明层
+- `dataset`
+- `dataset_display_name`
+- `data_dir`
+- `source`
+- `dataset_params`
+- `sample_builder`
+- `features`
+- `semantic_schema`
 
-这一层负责把标准化样本列转换成 `SparseFeature`、`DenseFeature` 和 `SequenceFeature` 定义。
+### 4.1 dataset
 
-必须承担的职责：
+- `dataset`：数据集标识，用于内部区分数据集。
+- `dataset_display_name`：日志展示名称，可选。
+- `data_dir`：数据根目录，`source.tables` 中的 `path` 会相对它进行解析。
 
-- 声明用户侧 sparse 和 dense 特征
-- 声明物品侧 sparse 和 dense 特征
-- 声明序列特征及其 embedding 共享关系
-- 定义 DCNv2 和 RankMixer 各自使用的 pooling 方式
+### 4.2 source
 
-建议的配置字段：
+`source` 用来描述原始表如何读取、如何 merge 成统一交互表。
 
-```python
-"features": {
-	"user_sparse": ["uid", "gender", "age"],
-	"user_dense": ["user_score"],
-	"item_sparse": ["iid", "cate_id", "brand_id"],
-	"item_dense": ["price"],
-	"sequence": [
-		{
-			"name": "hist_item_id",
-			"source": "iid",
-			"shared_with": "target_item_id",
-			"rankmixer_pooling": "concat",
-			"dcn_pooling": "mean",
-		},
-		{
-			"name": "hist_cate_id",
-			"source": "cate_id",
-			"shared_with": "target_cate_id",
-			"rankmixer_pooling": "concat",
-			"dcn_pooling": "mean",
-		},
-	],
-	"embedding_dim": 16,
-	"padding_idx": 0,
+当前支持：
+
+- `base_table`：主表名，通常是交互表，例如 `interactions`
+- `tables`：原始表读取配置
+- `joins`：表关联规则
+- `post_merge_transforms`：merge 后字段变换规则，可选
+- `select_columns`：最终统一交互表保留字段，可选
+
+#### source.tables
+
+`source.tables` 是一个字典，每个键对应一张原始表，例如：
+
+- `interactions`
+- `users`
+- `items`
+
+每张表当前支持：
+
+- `path`：文件路径，相对 `data_dir`
+- `read_csv`：传给 `pandas.read_csv` 的参数
+- `transforms`：单表读取后的字段变换规则，可选
+- `select_columns`：该表保留字段，可选
+
+例如：
+
+```json
+"interactions": {
+  "path": "seq.csv",
+  "read_csv": {
+    "sep": ",",
+    "header": 0,
+    "encoding": "utf-8"
+  },
+  "select_columns": ["uid", "iid", "timestamp", "label"]
 }
 ```
 
-这一层非常适合配置化生成，因为当前的特征类本身已经是通用的。
+#### source.joins
 
-### 4. 语义分组层
+`joins` 用来描述主表与其他表如何关联。每个 join 当前支持：
 
-这一层描述 RankMixer tokenization 如何将特征组织成语义 token。
+- `right_table`：右表名
+- `left_on`：左表 join 键
+- `right_on`：右表 join 键
+- `how`：join 方式，通常为 `left`
+- `select_columns`：该次 join 的右表保留字段，可选
 
-必须承担的职责：
+#### source.transforms
 
-- 定义具名语义组
-- 将静态特征映射到各个语义组中
-- 将序列特征按 `mean`、`target` 等 pool mode 映射到语义组中
+当前代码支持以下字段变换类型：
 
-建议的配置字段：
+- `split_first`：按分隔符拆分字符串并取第一段
+- `binary_compare`：按比较规则生成二分类标签
+- `astype`：类型转换
 
-```python
-"semantic_schema": [
-	{"name": "user_profile", "features": ["uid", "gender", "age"]},
-	{"name": "target_item", "features": ["target_item_id", "target_cate_id", "target_brand_id"]},
-	{"name": "sequence_global", "sequence_features": ["hist_item_id", "hist_cate_id"], "pool_modes": ["mean"]},
-	{"name": "sequence_target", "sequence_features": ["hist_item_id", "hist_cate_id"], "pool_modes": ["target"]},
+这些变换既可以用于单表读取后，也可以用于 merge 后。
+
+#### select_columns 的行为
+
+这是配置里最容易误解的字段之一。
+
+当前实现中：
+
+- 如果 `tables.<table_name>.select_columns` 不写，则该表读取后的所有字段都会保留
+- 如果 `source.select_columns` 不写，则 merge 和变换后的所有字段都会保留
+
+也就是说，`select_columns` 是字段裁剪规则，不是字段声明规则。
+
+建议实践：
+
+- 在单表层尽量写 `tables.<table_name>.select_columns`
+- 在整表层尽量写 `source.select_columns`
+
+这样做的好处是：
+
+- 避免无关字段进入后续 merge
+- 降低字段重名和冲突风险
+- 让配置意图更清晰，排查问题更直接
+
+### 4.3 dataset_params
+
+当前主要使用：
+
+- `max_seq_len`：历史序列最大长度
+
+如果 `sample_builder.max_seq_len` 未显式给出，则会回退使用这里的值。
+
+### 4.4 sample_builder
+
+`sample_builder` 控制如何从统一交互表生成监督样本。
+
+当前支持：
+
+- `user_id_col`：用户列名
+- `timestamp_col`：时间列名
+- `label_col`：标签列名
+- `max_seq_len`：历史序列最大长度
+- `history_filter.positive_only`：是否仅让正样本进入历史序列
+- `split.type`：当前仅支持 `global_time_ratio`
+- `split.ratios`：例如 `[0.8, 0.1, 0.1]`
+
+当前默认样本构造逻辑是：
+
+- 先按用户和时间排序
+- 对每个用户逐条构造样本
+- 只有在已有历史时才生成监督样本
+- 如果 `positive_only=true`，则只有正样本行为进入历史序列
+- 所有样本构造完后，再按时间全局切分 `train / val / test`
+
+### 4.5 features
+
+`features` 用来声明哪些列会变成模型输入。
+
+当前支持：
+
+- `user_sparse`
+- `user_dense`
+- `item_sparse`
+- `item_dense`
+- `sequence`
+- `embedding_dim`
+- `padding_idx`
+
+#### user_sparse / user_dense / item_sparse / item_dense
+
+这些字段可以写成字符串，也可以写成对象。
+
+字符串写法：
+
+```json
+"user_sparse": ["uid", "age"]
+```
+
+等价于：
+
+```json
+"user_sparse": [
+  {"name": "uid", "source": "uid"},
+  {"name": "age", "source": "age"}
 ]
 ```
 
-这部分已经非常接近纯配置驱动，当前可通过 `normalize_rankmixer_group_schema()` 和 `build_rankmixer_semantic_groups()` 直接使用。
+对象写法适用于模型输入名和原始列名不同的场景，例如：
 
-## 建议的统一配置形态
-
-数据集部分可以统一标准化为一个配置对象：
-
-```python
-DATASET_CONFIG = {
-	"dataset": "custom_three_table",
-	"data_dir": "./generative_ranking/data/custom_dataset/",
-	"source": {...},
-	"sample_builder": {...},
-	"features": {...},
-	"semantic_schema": [...],
+```json
+{
+  "name": "target_item_id",
+  "source": "iid"
 }
 ```
 
-训练和模型部分则可以保持当前形态不变：
+#### sequence
 
-- `training`
-- `dcn_v2`
-- `rankmixer`
+`sequence` 描述哪些列需要构造成历史序列特征。
 
-这意味着完整的新数据集接入流程可以收敛为：
+当前每个 sequence 项支持：
 
-1. Add raw files under a new data directory.
-2. Add one new dataset config module.
-3. Point `python -m generative_ranking.train --config ...` to that config.
-4. Reuse the same inference entrypoint with the same config.
+- `name`：模型输入中的序列名
+- `source`：历史来自哪一列
+- `shared_with`：与哪个 target 特征共享 embedding
+- `rankmixer_pooling`：RankMixer 的 sequence pooling，通常为 `concat`
+- `dcn_pooling`：DCNv2 的 sequence pooling，通常为 `mean`
 
-## 哪些部分必须泛化
+### 4.6 semantic_schema
 
-如果要做到“只改配置切数据集”，以下逻辑必须从当前 MovieLens 专用实现中抽成通用能力：
+`semantic_schema` 用于描述 RankMixer 的语义分组。
 
-- raw file reading
-- key and column mapping
-- label rule definition
-- sequence history construction
-- split strategy
-- feature column generation
-- semantic schema expansion from config
+每个语义组当前支持：
 
-这些步骤应尽量收敛到统一的数据配置协议和通用数据构建器中，而不是回退到数据集专用脚本。
+- `name`：语义组名称
+- `features`：静态特征名列表
+- `sequence_features`：序列特征名列表
+- `pool_modes`：例如 `mean`、`target`
 
-## 哪些部分可以继续留在模型层
+这里写的是模型输入名，而不是原始 CSV 列名。
 
-以下行为应继续保留在模型层，而不是下沉到数据层：
+## 5. 通用约束与注意事项
 
-- DCNv2 using sequence pooling such as `mean`
-- RankMixer using sequence tokenization with `concat` plus semantic grouping
-- MoE, token mixing, and encoder structure
+### 5.1 字段一致性
 
-数据层只需要暴露足够的元信息，供 model factory 一致地构造这些变体即可。
+以下字段在数据构建中最关键：
 
-## 适用边界
+- 用户主键
+- 物品主键
+- 时间字段
+- 标签字段
+- 用于构造历史序列的交互字段
 
-这套统一范式最适合以下场景：
+这些字段的列名和语义必须与 `data.json` 保持一致。
 
-- CTR or binary ranking
-- user-item interaction logs
-- static user and item side features
-- sequence features derived directly from interactions
+### 5.2 join key 一致性
 
-但它本身不足以覆盖以下场景：
+所有 join key 必须满足：
 
-- multi-task datasets with multiple labels per sample
-- listwise ranking pipelines
-- datasets that require negative sampling coupled to training-time logic
-- session graph construction or non-tabular modalities
+- 类型一致
+- 编码方式一致
+- 语义一致
 
-对于这些场景，框架应允许插入自定义 sample builder hook，同时仍然复用统一的特征声明和语义分组 schema。
+如果用户表、物品表、交互表中的 key 无法对齐，后续 merge 会直接影响样本完整性。
 
-## 建议的落地路径
+### 5.3 标签与时间字段
 
-风险最低的迁移路径是：
+- `label` 决定监督目标
+- `timestamp` 决定排序和数据切分
 
-1. Define a standardized dataset config protocol for the four layers above.
-2. Refactor MovieLens into the first implementation of that protocol.
-3. Introduce a generic three-table dataset builder under `generative_ranking/data/`.
-4. Keep `prepare_dataset()` returning the same bundle structure used today.
-5. Validate training and inference with MovieLens before onboarding new datasets.
+如果这两个字段缺失或语义错误，训练和评估结果都会不可信。
 
-## 总结
+### 5.4 序列构造规则
 
-结论是肯定的：统一范式是可行的，而且当前代码在模型层和语义分组层已经比较接近目标形态。
+样本构造逻辑会直接影响模型输入与最终指标，尤其是：
 
-真正缺失的抽象在数据层。一旦样本构造、特征声明和语义分组都由同一套数据集配置协议驱动，那么对于标准三表 ranking 数据，切换数据集就可以收敛为配置修改，而不再需要额外改代码。
+- 历史是否只保留正样本
+- 历史序列最大长度是多少
+- 样本切分是否按时间进行
+
+这些都应明确写在 `sample_builder` 中，而不是依赖隐式约定。
+
+### 5.5 配置复用边界
+
+虽然这套协议支持较强的配置驱动，但并不是所有数据集都能做到完全“只改配置”。
+
+以下场景通常仍需要扩展：
+
+- 多任务标签
+- listwise 排序
+- 复杂负采样逻辑
+- 图像、文本等非结构化特征
+- 自定义 session 重建逻辑
+
+当前协议最适合：
+
+- CTR 或二分类 ranking
+- 用户-物品交互日志
+- 静态用户 / 物品特征
+- 可直接从交互中构造历史序列的任务
+
+## 6. 示例说明
+
+工程中可以提供某个数据集作为配置示例，但示例数据集不是数据协议本身的一部分。
+
+也就是说：
+
+- 数据协议是通用的
+- 示例配置只是帮助理解 `data.json` 应该怎么写
+
+如果你接入新的数据集，应该以当前协议为准，而不是以某个示例数据集的字段命名为准。
+
+## 7. 建议使用方式
+
+建议按下面顺序接入新数据集：
+
+1. 先把原始数据整理成 `user_info.csv / item_fea.csv / seq.csv` 三表格式。
+2. 先编写 `data.json`，验证读取、join 和样本构造逻辑。
+3. 再补充 `train.json` 和 `infer.json`。
+4. 先单独训练一个模型，验证训练流程是否正确。
+5. 再执行推理与指标检查，确认训练和推理使用的是同一套数据语义。

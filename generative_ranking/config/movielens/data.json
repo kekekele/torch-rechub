@@ -29,7 +29,7 @@
           "header": 0,
           "encoding": "utf-8"
         },
-        "select_columns": ["movie_id", "genre"]
+        "select_columns": ["movie_id", "title", "release_year", "genres"]
       }
     },
     "joins": [
@@ -46,7 +46,7 @@
         "how": "left"
       }
     ],
-    "select_columns": ["user_id", "movie_id", "gender", "age", "occupation", "zip", "genre", "timestamp", "label"]
+    "select_columns": ["user_id", "movie_id", "gender", "age", "occupation", "zip", "title", "release_year", "genres", "timestamp", "label"]
   },
   "dataset_params": {
     "max_seq_len": 50
@@ -73,23 +73,30 @@
         "source": "movie_id"
       },
       {
-        "name": "target_genre_id",
-        "source": "genre"
+        "name": "target_title",
+        "source": "title"
       }
     ],
-    "item_dense": [],
+    "item_dense": [
+      {
+        "name": "target_release_year",
+        "source": "release_year"
+      }
+    ],
+    "item_sequence": [
+      {
+        "name": "target_genres",
+        "source": "genres",
+        "rankmixer_pooling": "mean",
+        "dcn_pooling": "mean",
+        "value_sep": ","
+      }
+    ],
     "sequence": [
       {
         "name": "hist_item_id",
         "source": "movie_id",
         "shared_with": "target_item_id",
-        "rankmixer_pooling": "concat",
-        "dcn_pooling": "mean"
-      },
-      {
-        "name": "hist_genre_id",
-        "source": "genre",
-        "shared_with": "target_genre_id",
         "rankmixer_pooling": "concat",
         "dcn_pooling": "mean"
       }
@@ -104,16 +111,16 @@
     },
     {
       "name": "target_item",
-      "features": ["target_item_id", "target_genre_id"]
+      "features": ["target_item_id", "target_title", "target_release_year", "target_genres"]
     },
     {
       "name": "sequence_global",
-      "sequence_features": ["hist_item_id", "hist_genre_id"],
+      "sequence_features": ["hist_item_id"],
       "pool_modes": ["mean"]
     },
     {
       "name": "sequence_target",
-      "sequence_features": ["hist_item_id", "hist_genre_id"],
+      "sequence_features": ["hist_item_id"],
       "pool_modes": ["target"]
     }
   ]
