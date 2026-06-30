@@ -20,14 +20,14 @@ def _config_default(config, *keys, fallback=None):
 
 def _default_model_name(config):
     config_model = str(config.get("model_name", "")).lower()
-    if config_model in {"dcn_v2", "rankmixer"}:
+    if config_model in {"dcn_v2", "rankmixer", "onetrans"}:
         return config_model
     return "rankmixer"
 
 
 def build_parser(default_config):
     parser = argparse.ArgumentParser(
-        description="Run inference for a trained DCNv2 or RankMixer checkpoint.",
+        description="Run inference for a trained DCNv2, RankMixer, or OneTrans checkpoint.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -38,7 +38,7 @@ def build_parser(default_config):
     parser.add_argument(
         "--model_name",
         default=_default_model_name(default_config),
-        choices=["dcn_v2", "rankmixer"],
+        choices=["dcn_v2", "rankmixer", "onetrans"],
         help="Model architecture used to build the network before loading checkpoint weights.",
     )
     parser.add_argument(

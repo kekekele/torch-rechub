@@ -123,6 +123,18 @@ def apply_overrides(config, args):
     rankmixer_cfg["token_mixing_dropout"] = args.rankmixer_token_mixing_dropout
     rankmixer_cfg["ffn_dropout"] = args.rankmixer_ffn_dropout
     rankmixer_cfg["head_dropout"] = args.rankmixer_head_dropout
+    onetrans_cfg = config["onetrans"]
+    onetrans_cfg["d_model"] = args.onetrans_d_model
+    onetrans_cfg["ns_len"] = args.onetrans_ns_len
+    onetrans_cfg["num_heads"] = args.onetrans_num_heads
+    onetrans_cfg["ffn_hidden"] = args.onetrans_ffn_hidden
+    onetrans_cfg["multi_num"] = args.onetrans_multi_num
+    onetrans_cfg["num_pyramid_layers"] = args.onetrans_num_pyramid_layers
+    onetrans_cfg["pyramid_align"] = args.onetrans_pyramid_align
+    onetrans_cfg["mask_type"] = args.onetrans_mask_type
+    onetrans_cfg["use_sep_token"] = args.onetrans_use_sep_token
+    onetrans_cfg["use_checkpoint"] = args.onetrans_use_checkpoint
+    onetrans_cfg["head_dropout"] = args.onetrans_head_dropout
     return config
 
 
@@ -137,7 +149,7 @@ def _config_default(config, *keys, fallback=None):
 
 def build_parser(default_config):
     parser = argparse.ArgumentParser(
-        description="Train DCNv2 and RankMixer with the standalone generative_ranking package.",
+        description="Train DCNv2, RankMixer, and OneTrans with the standalone generative_ranking package.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
@@ -150,8 +162,8 @@ def build_parser(default_config):
     experiment_group.add_argument(
         "--model_name",
         default=_config_default(default_config, "model_name", fallback="all"),
-        choices=["all", "dcn_v2", "rankmixer"],
-        help="Choose which model to train. 'all' runs DCNv2 and RankMixer on the same dataset split.",
+        choices=["all", "dcn_v2", "rankmixer", "onetrans"],
+        help="Choose which model to train. 'all' runs DCNv2, RankMixer, and OneTrans on the same dataset split.",
     )
     experiment_group.add_argument(
         "--data_dir",
@@ -215,6 +227,43 @@ def build_parser(default_config):
     rankmixer_group.add_argument("--rankmixer_ffn_dropout", type=float, default=_config_default(default_config, "rankmixer", "ffn_dropout", fallback=0.0), help="Dropout applied inside the per-token FFN or MoE experts.")
     rankmixer_group.add_argument("--rankmixer_head_dropout", type=float, default=_config_default(default_config, "rankmixer", "head_dropout", fallback=0.0), help="Dropout applied in the prediction head after token pooling.")
 
+    onetrans_group = parser.add_argument_group("OneTrans")
+    onetrans_group.add_argument("--onetrans_d_model", type=int, default=_config_default(default_config, "onetrans", "d_model", fallback=128), help="Hidden token dimension used by OneTrans.")
+    onetrans_group.add_argument("--onetrans_ns_len", type=int, default=_config_default(default_config, "onetrans", "ns_len", fallback=4), help="Number of non-sequential pseudo tokens.")
+    onetrans_group.add_argument("--onetrans_num_heads", type=int, default=_config_default(default_config, "onetrans", "num_heads", fallback=4), help="Attention head count used by OneTrans.")
+    onetrans_group.add_argument("--onetrans_ffn_hidden", type=int, default=_config_default(default_config, "onetrans", "ffn_hidden", fallback=256), help="Hidden width used by the mixed FFN inside OneTrans blocks.")
+    onetrans_group.add_argument("--onetrans_multi_num", type=int, default=_config_default(default_config, "onetrans", "multi_num", fallback=4), help="Number of OneTrans blocks stacked in each stage.")
+    onetrans_group.add_argument("--onetrans_num_pyramid_layers", type=int, default=_config_default(default_config, "onetrans", "num_pyramid_layers", fallback=6), help="Number of tail-truncation stages after the base OneTrans stack.")
+    onetrans_group.add_argument("--onetrans_pyramid_align", type=int, default=_config_default(default_config, "onetrans", "pyramid_align", fallback=32), help="Alignment factor for the linear pyramid schedule.")
+    onetrans_group.add_argument("--onetrans_mask_type", choices=["paper_causal", "origin", "hard_mask", "bimask_soft", "bimask_hard"], default=_config_default(default_config, "onetrans", "mask_type", fallback="paper_causal"), help="Attention mask mode used by OneTrans.")
+    onetrans_group.add_argument(
+        "--onetrans_sep_token",
+        dest="onetrans_use_sep_token",
+        action="store_true",
+        help="Insert a learnable SEP token between sequence and non-sequence tokens.",
+    )
+    onetrans_group.add_argument(
+        "--onetrans_no_sep_token",
+        dest="onetrans_use_sep_token",
+        action="store_false",
+        help="Disable the SEP token between sequence and non-sequence tokens.",
+    )
+    onetrans_group.set_defaults(onetrans_use_sep_token=_config_default(default_config, "onetrans", "use_sep_token", fallback=False))
+    onetrans_group.add_argument(
+        "--onetrans_activation_checkpoint",
+        dest="onetrans_use_checkpoint",
+        action="store_true",
+        help="Enable activation checkpointing inside OneTrans blocks during training.",
+    )
+    onetrans_group.add_argument(
+        "--onetrans_no_activation_checkpoint",
+        dest="onetrans_use_checkpoint",
+        action="store_false",
+        help="Disable activation checkpointing inside OneTrans blocks.",
+    )
+    onetrans_group.set_defaults(onetrans_use_checkpoint=_config_default(default_config, "onetrans", "use_checkpoint", fallback=False))
+    onetrans_group.add_argument("--onetrans_head_dropout", type=float, default=_config_default(default_config, "onetrans", "head_dropout", fallback=0.0), help="Dropout applied before the OneTrans prediction head.")
+
     return parser
 
 
@@ -260,6 +309,8 @@ def main():
         auc_results["dcn_v2"] = train_single_model("dcn_v2", bundle, config)
     if model_name in ("all", "rankmixer"):
         auc_results["rankmixer"] = train_single_model("rankmixer", bundle, config)
+    if model_name in ("all", "onetrans"):
+        auc_results["onetrans"] = train_single_model("onetrans", bundle, config)
     print("AUC summary:")
     for current_model, auc in auc_results.items():
         print(f"  {current_model}: {auc:.6f}")

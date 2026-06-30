@@ -19,9 +19,9 @@
         "read_csv": {
           "sep": ",",
           "header": 0,
-          "encoding": "utf-8",
-           "select_columns": ["uid", "gender", "age", "occupation", "zip_code"]
-        }
+          "encoding": "utf-8"
+        },
+        "select_columns": ["uid", "gender", "age", "occupation", "zip_code"]
       },
       "items": {
         "path": "item_fea.csv",
@@ -66,7 +66,16 @@
     }
   },
   "features": {
-    "user_sparse": ["user_id", "gender", "age", "occupation", "zip_code"],
+    "user_sparse": [
+      {
+        "name": "user_id",
+        "source": "uid"
+      },
+      "gender",
+      "age",
+      "occupation",
+      "zip_code"
+    ],
     "user_dense": [],
     "item_sparse": [
       {
@@ -100,7 +109,7 @@
   "semantic_schema": [
     {
       "name": "user_profile",
-      "features": ["uid", "gender", "age", "occupation", "zip_code"]
+      "features": ["user_id", "gender", "age", "occupation", "zip_code"]
     },
     {
       "name": "target_item",

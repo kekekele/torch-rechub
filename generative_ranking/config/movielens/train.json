@@ -33,5 +33,18 @@
     "token_mixing_dropout": 0.0,
     "ffn_dropout": 0.0,
     "head_dropout": 0.0
+  },
+  "onetrans": {
+    "d_model": 128,
+    "ns_len": 4,
+    "num_heads": 4,
+    "ffn_hidden": 256,
+    "multi_num": 2,
+    "num_pyramid_layers": 4,
+    "pyramid_align": 1,
+    "mask_type": "paper_causal",
+    "use_sep_token": false,
+    "use_checkpoint": false,
+    "head_dropout": 0.0
   }
 }

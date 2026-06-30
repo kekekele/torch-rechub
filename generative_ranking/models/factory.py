@@ -1,4 +1,5 @@
 from .dcn_v2 import DCNv2
+from .onetrans import OneTrans
 from .rankmixer import RankMixer
 from .rankmixer_grouping import build_rankmixer_semantic_groups
 
@@ -32,4 +33,23 @@ def build_model(model_name, bundle, config):
             return_moe_loss=use_moe,
         )
         return model, not use_moe
+    if model_key == "onetrans":
+        onetrans_cfg = config["onetrans"]
+        model = OneTrans(
+            features=bundle["rankmixer_features"],
+            sequence_features=bundle.get("rankmixer_sequence_features", []),
+            max_seq_len=config.get("dataset_params", {}).get("max_seq_len", 50),
+            ns_len=onetrans_cfg["ns_len"],
+            d_model=onetrans_cfg["d_model"],
+            num_heads=onetrans_cfg["num_heads"],
+            ffn_hidden=onetrans_cfg["ffn_hidden"],
+            multi_num=onetrans_cfg["multi_num"],
+            num_pyramid_layers=onetrans_cfg["num_pyramid_layers"],
+            pyramid_align=onetrans_cfg["pyramid_align"],
+            mask_type=onetrans_cfg["mask_type"],
+            use_sep_token=onetrans_cfg["use_sep_token"],
+            use_checkpoint=onetrans_cfg["use_checkpoint"],
+            head_dropout=onetrans_cfg["head_dropout"],
+        )
+        return model, True
     raise ValueError(f"Unsupported model_name={model_name}")
