@@ -19,6 +19,7 @@ def linear_pyramid_schedule(total_tokens, ns_len, num_layers, align_to=32):
     if num_layers == 1:
         return [ns_len]
 
+    # 金字塔 stack 中，query 长度从 total_tokens 逐层收缩到 ns_len。
     schedule = [total_tokens]
     for layer_idx in range(1, num_layers - 1):
         raw = total_tokens + (ns_len - total_tokens) * layer_idx / (num_layers - 1)
@@ -70,6 +71,9 @@ class MixedCausalAttention(nn.Module):
         self.if_mask = if_mask
         self.mask_type = mask_type
         self.dense = nn.Linear(d_model, d_model)
+        # Mixed Q/K/V parameterization:
+        # - seq token 使用共享投影（索引 self.ns_len）
+        # - 每个 NS token 使用独立投影（索引 0..ns_len-1）
         self.kqv_list = nn.ModuleList(
             [nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(3)]) for _ in range(ns_len + 1)]
         )
@@ -114,8 +118,10 @@ class MixedCausalAttention(nn.Module):
     def _project_one(self, x, proj_idx):
         seq_len = x.size(1) - self.ns_len
         outputs = []
+        # 前面 seq_len 个 token 属于 S token，使用共享参数组 self.ns_len
         if seq_len > 0:
             outputs.append(self._cal_kqv(x[:, :seq_len, :], self.ns_len, proj_idx))
+        # 后面 ns_len 个 token 属于 NS token，每个 token 使用独立的参数组
         for i in range(self.ns_len):
             start = seq_len + i
             outputs.append(self._cal_kqv(x[:, start : start + 1, :], i, proj_idx))
@@ -174,6 +180,7 @@ class OneTransBlock(nn.Module):
     def _forward_impl(self, x):
         x = self.rms_0(x)
         k_x, q_x, v_x = x, x, x
+        # pyramid stack 只裁剪 query 侧长度，key/value 仍保留完整上下文。
         if self.pyramid_stack_len is not None and self.pyramid_stack_len >= self.ns_len:
             q_x = x[:, -self.pyramid_stack_len :, :]
         origin_x = q_x
@@ -240,6 +247,8 @@ class OneTrans(nn.Module):
 
         self.sparse_features = [fea for fea in self.features if isinstance(fea, SparseFeature)]
         self.dense_features = [fea for fea in self.features if isinstance(fea, DenseFeature)]
+        # 这里的 item_sequence_features 不是 OneTrans 的历史 S token 序列输入，
+        # 而是“多值 item/静态属性”类型特征，需要先池化后再进入非序列 tokenizer。
         self.item_sequence_features = [fea for fea in self.features if isinstance(fea, SequenceFeature)]
         self.embedding_features = self.sparse_features + self.item_sequence_features + list(self.sequence_features)
         self.embedding = EmbeddingLayer(self.embedding_features) if self.embedding_features else None
@@ -331,6 +340,8 @@ class OneTrans(nn.Module):
             dense = x[fea.name].float()
             outputs.append(dense if dense.dim() > 1 else dense.unsqueeze(1))
         for fea in self.item_sequence_features:
+            # item_sequence_features 为多值特征，但不可使用 concat 池化；
+            # 它们会先被归约为一个固定向量，再进入 NS token tokenizer。
             if fea.pooling == "concat":
                 raise ValueError("OneTrans does not support concat pooling for non-sequential item features")
             seq_emb = self._get_embedding_layer(fea)(x[fea.name].long())
@@ -341,6 +352,7 @@ class OneTrans(nn.Module):
     def _build_seq_tokens(self, x):
         seq_parts = []
         for fea in self.sequence_features:
+            # sequence_features 必须使用 concat 池化，以保持 S token 的时间步顺序。
             if fea.pooling != "concat":
                 raise ValueError("OneTrans sequence features must use pooling='concat' to preserve token order")
             seq_parts.append(self._get_embedding_layer(fea)(x[fea.name].long()))
@@ -350,6 +362,7 @@ class OneTrans(nn.Module):
     def forward(self, x):
         batch_size = next(iter(x.values())).size(0)
         non_seq_inputs = self._build_non_seq_inputs(x)
+        # non-seq 特征先聚合成一个向量，再切成固定数量的 NS token。
         ns_tokens = self.non_seq_tokenizer(non_seq_inputs).view(batch_size, self.ns_len, self.d_model)
         seq_tokens = self._build_seq_tokens(x)
         if self.use_sep_token:
@@ -358,6 +371,7 @@ class OneTrans(nn.Module):
         else:
             tokens = torch.cat([seq_tokens, ns_tokens], dim=1)
 
+        # 先过 base block，再进入逐层缩短 query 的 pyramid stack。
         tokens = self.base_block(tokens)
         for block in self.stack_blocks:
             tokens = block(tokens)

@@ -67,10 +67,7 @@
   },
   "features": {
     "user_sparse": [
-      {
-        "name": "user_id",
-        "source": "uid"
-      },
+      "uid",
       "gender",
       "age",
       "occupation",
@@ -109,7 +106,7 @@
   "semantic_schema": [
     {
       "name": "user_profile",
-      "features": ["user_id", "gender", "age", "occupation", "zip_code"]
+      "features": ["uid", "gender", "age", "occupation", "zip_code"]
     },
     {
       "name": "target_item",

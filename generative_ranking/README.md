@@ -8,6 +8,7 @@
 
 - `DCNv2`
 - `RankMixer`
+- `OneTrans`
 
 ## 2. 代码目录说明
 
@@ -43,7 +44,7 @@ generative_ranking/
 
 - `models/`
   存放模型定义与模型工厂。
-  当前主要包括 `dcn_v2.py`、`rankmixer.py`、`factory.py`、`rankmixer_grouping.py`。
+  当前主要包括 `dcn_v2.py`、`rankmixer.py`、`onetrans.py`、`factory.py`、`rankmixer_grouping.py`。
 
 - `util/`
   存放通用工具模块，例如配置加载、DataLoader 构建、padding、运行时辅助函数等。
@@ -175,6 +176,12 @@ python -m generative_ranking.train --config movielens --model_name rankmixer
 python -m generative_ranking.train --config movielens --model_name dcn_v2
 ```
 
+如果只训练 OneTrans：
+
+```bash
+python -m generative_ranking.train --config movielens --model_name onetrans
+```
+
 ### 4.2 训练会发生什么
 
 训练流程大致如下：
@@ -229,7 +236,69 @@ RankMixer 还支持一组结构和正则参数，例如：
 - `--rankmixer_ffn_dropout`：指定 FFN 或 MoE 专家内部 dropout。
 - `--rankmixer_head_dropout`：指定预测头 dropout。
 
-### 4.4 训练时的注意事项
+OneTrans 也支持一组结构参数，例如：
+
+- `--onetrans_d_model`：指定 OneTrans token 隐藏维度。
+- `--onetrans_ns_len`：指定非序列伪 token 数量。
+- `--onetrans_num_heads`：指定多头注意力 head 数。
+- `--onetrans_ffn_hidden`：指定 OneTrans block 内混合 FFN 的隐藏维度。
+- `--onetrans_multi_num`：指定每个 stage 内堆叠多少个 OneTrans block。
+- `--onetrans_num_pyramid_layers`：指定 base stack 之后的金字塔 stage 数。
+- `--onetrans_pyramid_align`：指定金字塔长度调度的对齐因子。
+- `--onetrans_mask_type`：指定 attention mask 类型，可选 `paper_causal`、`origin`、`hard_mask`、`bimask_soft`、`bimask_hard`。
+- `--onetrans_sep_token` / `--onetrans_no_sep_token`：控制是否在序列 token 和 NS token 之间插入可学习分隔 token。
+- `--onetrans_activation_checkpoint` / `--onetrans_no_activation_checkpoint`：控制是否启用 activation checkpoint。
+- `--onetrans_head_dropout`：指定 OneTrans 输出头前的 dropout。
+
+### 4.4 MovieLens 默认参数说明
+
+`generative_ranking/config/movielens/train.json` 中为 `DCNv2`、`RankMixer` 和 `OneTrans` 提供了默认结构参数。
+
+DCNv2 默认参数含义：
+
+- `n_cross_layers`：cross network 的层数。
+- `mlp_params.dims`：DNN 分支每层的隐藏维度。
+- `mlp_params.dropout`：DNN 分支 dropout。
+- `mlp_params.activation`：DNN 分支激活函数。
+
+RankMixer 默认参数含义：
+
+- `d_model`：语义 token 和 encoder block 共享的隐藏维度。
+- `num_layers`：RankMixer encoder block 层数。
+- `num_tokens`：语义 tokenizer 输出的基础 token 数。
+- `seq_pool_modes`：对每个历史序列特征做摘要时使用的 pooling 方式，例如 `mean`、`target`。
+- `use_moe`：是否使用 sparse MoE 替代普通 per-token FFN。
+- `moe_experts`：MoE 专家数量。
+- `moe_l1_coef`：MoE routing 的 L1 正则系数。
+- `moe_sparsity_ratio`：MoE routing 稀疏约束目标比例。
+- `moe_use_dtsi`：是否启用 DTSI 风格 routing 约束。
+- `moe_routing_type`：routing 函数类型，例如 `relu_dtsi`。
+- `input_dropout`：encoder 前的输入 dropout。
+- `token_mixing_dropout`：token mixing 模块内部 dropout。
+- `ffn_dropout`：FFN / MoE 专家内部 dropout。
+- `head_dropout`：预测头前的 dropout。
+
+OneTrans 默认参数含义：
+
+- `d_model`：序列 token 和 NS token 的隐藏维度。
+- `ns_len`：由静态 / 上下文特征切分得到的 NS token 数量。
+- `num_heads`：多头注意力的 head 数，必须整除 `d_model`。
+- `ffn_hidden`：OneTrans block 内 token-specific FFN 的隐藏宽度。
+- `multi_num`：每个 stage 内堆叠的 OneTrans block 数。
+- `num_pyramid_layers`：base stack 后追加的金字塔 stage 数，query 长度会逐层缩短。
+- `pyramid_align`：金字塔长度调度时使用的对齐系数。
+- `mask_type`：attention mask 模式，`paper_causal` 是当前默认论文对齐实现。
+- `use_sep_token`：是否在 sequence tokens 和 NS tokens 之间插入可学习分隔 token。
+- `use_checkpoint`：是否在 OneTrans block 内启用 activation checkpoint，以计算换显存。
+- `head_dropout`：最终预测头前的 dropout。
+
+更细的模型结构说明可进一步参考：
+
+- `models/DCNV2.md`：DCNv2 说明
+- `models/README.md`：OneTrans 说明
+- `models/RANKMIXER.md`：RankMixer 说明
+
+### 4.5 训练时的注意事项
 
 1. 如果只是验证流程，建议先单独跑一个模型，不要一开始就使用 `model_name=all`。
 
@@ -260,6 +329,12 @@ python -m generative_ranking.infer --config <dataset_name> --model_name rankmixe
 
 ```bash
 python -m generative_ranking.infer --config movielens --model_name rankmixer
+```
+
+如果评估 OneTrans：
+
+```bash
+python -m generative_ranking.infer --config movielens --model_name onetrans
 ```
 
 如果不显式传 `--checkpoint`，默认会从下面路径加载：
