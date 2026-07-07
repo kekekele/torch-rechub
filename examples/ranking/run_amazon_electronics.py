@@ -1,8 +1,11 @@
 import sys
 
+import numpy as np
 import pandas as pd
 import torch
+from sklearn.metrics import roc_auc_score
 
+from torch_rechub.basic.metric import log_loss
 from torch_rechub.basic.features import SequenceFeature, SparseFeature
 from torch_rechub.models.ranking import DCNv2, DIN
 from torch_rechub.trainers import CTRTrainer
@@ -20,6 +23,8 @@ def get_amazon_data_dict(dataset_path):
         item_col="item_id",
         time_col="time",
         item_attribute_cols=["cate_id"],
+        min_item=5,
+        max_len=101,
     )
     print("INFO: Now, the dataframe named: ", train.columns)
 
@@ -115,6 +120,13 @@ def build_model(
     raise ValueError(f"Unsupported model_name: {model_name}")
 
 
+def evaluate_auc_and_logloss(trainer, data_loader, labels):
+    predicts = np.asarray(trainer.predict(trainer.model, data_loader), dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    predicts = np.clip(predicts, 1e-12, 1 - 1e-12)
+    return roc_auc_score(labels, predicts), log_loss(labels, predicts)
+
+
 def main(
     dataset_path,
     model_name,
@@ -162,8 +174,12 @@ def main(
         model_path=save_dir,
     )
     ctr_trainer.fit(train_dataloader, val_dataloader)
-    auc = ctr_trainer.evaluate(ctr_trainer.model, test_dataloader)
-    print(f"test auc: {auc}")
+    val_auc, val_logloss = evaluate_auc_and_logloss(ctr_trainer, val_dataloader, val_y)
+    test_auc, test_logloss = evaluate_auc_and_logloss(
+        ctr_trainer, test_dataloader, test_y
+    )
+    print(f"valid auc: {val_auc:.6f}, valid logloss: {val_logloss:.6f}")
+    print(f"test auc: {test_auc:.6f}, test logloss: {test_logloss:.6f}")
 
 
 if __name__ == "__main__":
