@@ -147,7 +147,13 @@ def main():
         )
     state_dict = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(state_dict)
-    trainer = CTRTrainer(model, n_epoch=1, device=config["device"], loss_mode=loss_mode, model_path=ensure_dir(os.path.dirname(checkpoint_path) or "."))
+    trainer = CTRTrainer(
+        model,
+        n_epoch=1,
+        device=config["device"],
+        loss_mode=loss_mode,
+        model_path=ensure_dir(os.path.dirname(checkpoint_path) or "."),
+    )
     split_key = f"{args.split}_dl"
     record_key = f"{args.split}_records"
     data_loader = bundle[split_key]

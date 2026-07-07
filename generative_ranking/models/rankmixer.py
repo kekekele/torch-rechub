@@ -11,17 +11,46 @@ from ..basic.tokenization import SemanticTokenizer
 
 
 class RankMixerBlock(nn.Module):
-    def __init__(self, num_tokens, d_model, num_heads, ffn_mult, token_dp=0.0, ffn_dp=0.0, ln_style="pre", use_moe=False, moe_experts=4, moe_l1_coef=0.0, moe_sparsity_ratio=1.0, moe_use_dtsi=True, moe_routing_type="relu_dtsi"):
+    def __init__(
+        self,
+        num_tokens,
+        d_model,
+        num_heads,
+        ffn_mult,
+        token_dp=0.0,
+        ffn_dp=0.0,
+        ln_style="pre",
+        use_moe=False,
+        moe_experts=4,
+        moe_l1_coef=0.0,
+        moe_sparsity_ratio=1.0,
+        moe_use_dtsi=True,
+        moe_routing_type="relu_dtsi",
+    ):
         super().__init__()
         self.ln1 = LayerNorm(d_model)
         self.ln2 = LayerNorm(d_model)
         self.ln_style = str(ln_style).lower()
         self.use_moe = bool(use_moe)
-        self.token_mixer = ParameterFreeTokenMixer(num_tokens, d_model, num_heads=num_heads, dropout=token_dp)
+        self.token_mixer = ParameterFreeTokenMixer(
+            num_tokens, d_model, num_heads=num_heads, dropout=token_dp
+        )
         if self.use_moe:
-            self.per_token_ffn = PerTokenSparseMoE(num_tokens=num_tokens, d_model=d_model, mult=ffn_mult, num_experts=moe_experts, dropout=ffn_dp, l1_coef=moe_l1_coef, sparsity_ratio=moe_sparsity_ratio, use_dtsi=moe_use_dtsi, routing_type=moe_routing_type)
+            self.per_token_ffn = PerTokenSparseMoE(
+                num_tokens=num_tokens,
+                d_model=d_model,
+                mult=ffn_mult,
+                num_experts=moe_experts,
+                dropout=ffn_dp,
+                l1_coef=moe_l1_coef,
+                sparsity_ratio=moe_sparsity_ratio,
+                use_dtsi=moe_use_dtsi,
+                routing_type=moe_routing_type,
+            )
         else:
-            self.per_token_ffn = PerTokenFFN(num_tokens=num_tokens, d_model=d_model, mult=ffn_mult, dropout=ffn_dp)
+            self.per_token_ffn = PerTokenFFN(
+                num_tokens=num_tokens, d_model=d_model, mult=ffn_mult, dropout=ffn_dp
+            )
         self.moe_loss = None
 
     def forward(self, x):
@@ -47,12 +76,45 @@ class RankMixerBlock(nn.Module):
 
 
 class RankMixerEncoder(nn.Module):
-    def __init__(self, num_layers, num_tokens, d_model, num_heads, ffn_mult, token_dp=0.0, ffn_dp=0.0, ln_style="pre", use_moe=False, moe_experts=4, moe_l1_coef=0.0, moe_sparsity_ratio=1.0, moe_use_dtsi=True, moe_routing_type="relu_dtsi", use_final_ln=True):
+    def __init__(
+        self,
+        num_layers,
+        num_tokens,
+        d_model,
+        num_heads,
+        ffn_mult,
+        token_dp=0.0,
+        ffn_dp=0.0,
+        ln_style="pre",
+        use_moe=False,
+        moe_experts=4,
+        moe_l1_coef=0.0,
+        moe_sparsity_ratio=1.0,
+        moe_use_dtsi=True,
+        moe_routing_type="relu_dtsi",
+        use_final_ln=True,
+    ):
         super().__init__()
-        self.blocks = nn.ModuleList([
-            RankMixerBlock(num_tokens=num_tokens, d_model=d_model, num_heads=num_heads, ffn_mult=ffn_mult, token_dp=token_dp, ffn_dp=ffn_dp, ln_style=ln_style, use_moe=use_moe, moe_experts=moe_experts, moe_l1_coef=moe_l1_coef, moe_sparsity_ratio=moe_sparsity_ratio, moe_use_dtsi=moe_use_dtsi, moe_routing_type=moe_routing_type)
-            for _ in range(int(num_layers))
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                RankMixerBlock(
+                    num_tokens=num_tokens,
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    ffn_mult=ffn_mult,
+                    token_dp=token_dp,
+                    ffn_dp=ffn_dp,
+                    ln_style=ln_style,
+                    use_moe=use_moe,
+                    moe_experts=moe_experts,
+                    moe_l1_coef=moe_l1_coef,
+                    moe_sparsity_ratio=moe_sparsity_ratio,
+                    moe_use_dtsi=moe_use_dtsi,
+                    moe_routing_type=moe_routing_type,
+                )
+                for _ in range(int(num_layers))
+            ]
+        )
         self.final_ln = LayerNorm(d_model) if use_final_ln else nn.Identity()
         self.moe_loss = None
 
@@ -68,28 +130,79 @@ class RankMixerEncoder(nn.Module):
 
 
 class RankMixer(nn.Module):
-    def __init__(self, features, sequence_features=None, d_model=128, num_layers=2, num_tokens=4, num_heads=None, ffn_mult=4, tokenizer_input_dim=None, semantic_groups=None, group_rules=None, token_projection="linear", seq_pool_modes=("mean",), include_seq_in_tokenization=True, add_cls_token=False, use_input_ln=True, input_dropout=0.0, token_mixing_dropout=0.0, ffn_dropout=0.0, head_dropout=0.0, ln_style="pre", use_final_ln=True, output_pooling="mean", use_moe=False, moe_experts=4, moe_l1_coef=0.0, moe_sparsity_ratio=1.0, moe_use_dtsi=True, moe_routing_type="relu_dtsi", return_moe_loss=None):
+    def __init__(
+        self,
+        features,
+        sequence_features=None,
+        d_model=128,
+        num_layers=2,
+        num_tokens=4,
+        num_heads=None,
+        ffn_mult=4,
+        tokenizer_input_dim=None,
+        semantic_groups=None,
+        group_rules=None,
+        token_projection="linear",
+        seq_pool_modes=("mean",),
+        include_seq_in_tokenization=True,
+        add_cls_token=False,
+        use_input_ln=True,
+        input_dropout=0.0,
+        token_mixing_dropout=0.0,
+        ffn_dropout=0.0,
+        head_dropout=0.0,
+        ln_style="pre",
+        use_final_ln=True,
+        output_pooling="mean",
+        use_moe=False,
+        moe_experts=4,
+        moe_l1_coef=0.0,
+        moe_sparsity_ratio=1.0,
+        moe_use_dtsi=True,
+        moe_routing_type="relu_dtsi",
+        return_moe_loss=None,
+    ):
         super().__init__()
         self.features = features
         self.sequence_features = sequence_features or []
-        self.sparse_features = [fea for fea in self.features if isinstance(fea, SparseFeature)]
-        self.dense_features = [fea for fea in self.features if isinstance(fea, DenseFeature)]
-        self.context_sequence_features = [fea for fea in self.features if isinstance(fea, SequenceFeature)]
-        self.embedding_features = self.sparse_features + self.context_sequence_features + list(self.sequence_features)
-        self.embedding = EmbeddingLayer(self.embedding_features) if self.embedding_features else None
+        # features 里承载的是静态 / 上下文特征；sequence_features 才是用户历史序列。
+        self.sparse_features = [
+            fea for fea in self.features if isinstance(fea, SparseFeature)
+        ]
+        self.dense_features = [
+            fea for fea in self.features if isinstance(fea, DenseFeature)
+        ]
+        self.context_sequence_features = [
+            fea for fea in self.features if isinstance(fea, SequenceFeature)
+        ]
+        self.embedding_features = (
+            self.sparse_features
+            + self.context_sequence_features
+            + list(self.sequence_features)
+        )
+        self.embedding = (
+            EmbeddingLayer(self.embedding_features) if self.embedding_features else None
+        )
         self.seq_pool_modes = [str(mode).lower() for mode in seq_pool_modes]
         self.include_seq_in_tokenization = bool(include_seq_in_tokenization)
         self.use_input_ln = bool(use_input_ln)
         self.add_cls_token = bool(add_cls_token)
         self.output_pooling = str(output_pooling).lower()
         self.use_moe = bool(use_moe)
-        self.return_moe_loss = self.use_moe if return_moe_loss is None else bool(return_moe_loss)
+        self.return_moe_loss = (
+            self.use_moe if return_moe_loss is None else bool(return_moe_loss)
+        )
         self.d_model = int(d_model)
         self.base_num_tokens = int(num_tokens)
-        self.tokenizer_input_dim = int(tokenizer_input_dim) if tokenizer_input_dim is not None else self._infer_tokenizer_input_dim()
+        self.tokenizer_input_dim = (
+            int(tokenizer_input_dim)
+            if tokenizer_input_dim is not None
+            else self._infer_tokenizer_input_dim()
+        )
 
         self.feature_projectors = nn.ModuleDict()
         self.feature_input_dims = {}
+        # 先把所有输入统一投影到 tokenizer_input_dim，保证 tokenizer 看到的是同构 feature 向量。
         for fea in self.sparse_features:
             self._register_feature_projector(fea.name, fea.embed_dim)
         for fea in self.dense_features:
@@ -98,25 +211,62 @@ class RankMixer(nn.Module):
             self._register_feature_projector(fea.name, fea.embed_dim)
         for fea in self.sequence_features:
             for mode in self.seq_pool_modes:
-                self._register_feature_projector(f"seq::{fea.name}::{mode}", fea.embed_dim)
+                self._register_feature_projector(
+                    f"seq::{fea.name}::{mode}", fea.embed_dim
+                )
 
         if not self.include_seq_in_tokenization:
-            self.seq_append_projection = nn.Linear(self.tokenizer_input_dim, self.d_model)
+            # 某些配置下，历史序列 summary 不参加 tokenizer 压缩，而是额外拼成独立 token。
+            self.seq_append_projection = nn.Linear(
+                self.tokenizer_input_dim, self.d_model
+            )
             seq_token_count = len(self.sequence_features) * len(self.seq_pool_modes)
         else:
             self.seq_append_projection = None
             seq_token_count = 0
 
-        self.tokenizer = SemanticTokenizer(feature_dims=self.feature_input_dims, target_tokens=self.base_num_tokens, d_model=self.d_model, semantic_groups=semantic_groups, group_rules=group_rules, token_projection=token_projection)
-        token_count = self.base_num_tokens + seq_token_count + (1 if self.add_cls_token else 0)
+        # SemanticTokenizer 的职责不是建模交互，而是把 feature-level 表示压成固定 token 预算。
+        self.tokenizer = SemanticTokenizer(
+            feature_dims=self.feature_input_dims,
+            target_tokens=self.base_num_tokens,
+            d_model=self.d_model,
+            semantic_groups=semantic_groups,
+            group_rules=group_rules,
+            token_projection=token_projection,
+        )
+        token_count = (
+            self.base_num_tokens + seq_token_count + (1 if self.add_cls_token else 0)
+        )
         self.num_heads = int(num_heads) if num_heads is not None else token_count
         if self.num_heads != token_count:
-            raise ValueError("RankMixer requires num_heads == token_count after token construction.")
+            raise ValueError(
+                "RankMixer requires num_heads == token_count after token construction."
+            )
 
         self.input_ln = LayerNorm(self.d_model) if self.use_input_ln else nn.Identity()
         self.input_dropout = nn.Dropout(input_dropout)
-        self.cls_token = nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02) if self.add_cls_token else None
-        self.encoder = RankMixerEncoder(num_layers=num_layers, num_tokens=token_count, d_model=self.d_model, num_heads=self.num_heads, ffn_mult=ffn_mult, token_dp=token_mixing_dropout, ffn_dp=ffn_dropout, ln_style=ln_style, use_moe=self.use_moe, moe_experts=moe_experts, moe_l1_coef=moe_l1_coef, moe_sparsity_ratio=moe_sparsity_ratio, moe_use_dtsi=moe_use_dtsi, moe_routing_type=moe_routing_type, use_final_ln=use_final_ln)
+        self.cls_token = (
+            nn.Parameter(torch.randn(1, 1, self.d_model) * 0.02)
+            if self.add_cls_token
+            else None
+        )
+        self.encoder = RankMixerEncoder(
+            num_layers=num_layers,
+            num_tokens=token_count,
+            d_model=self.d_model,
+            num_heads=self.num_heads,
+            ffn_mult=ffn_mult,
+            token_dp=token_mixing_dropout,
+            ffn_dp=ffn_dropout,
+            ln_style=ln_style,
+            use_moe=self.use_moe,
+            moe_experts=moe_experts,
+            moe_l1_coef=moe_l1_coef,
+            moe_sparsity_ratio=moe_sparsity_ratio,
+            moe_use_dtsi=moe_use_dtsi,
+            moe_routing_type=moe_routing_type,
+            use_final_ln=use_final_ln,
+        )
         self.head_dropout = nn.Dropout(head_dropout)
         self.head_dense1 = nn.Linear(self.d_model, self.d_model * 2)
         self.head_dense2 = nn.Linear(self.d_model * 2, self.d_model)
@@ -130,7 +280,11 @@ class RankMixer(nn.Module):
     def _register_feature_projector(self, feature_name, input_dim):
         input_dim = int(input_dim)
         self.feature_input_dims[feature_name] = self.tokenizer_input_dim
-        self.feature_projectors[feature_name] = nn.Identity() if input_dim == self.tokenizer_input_dim else nn.Linear(input_dim, self.tokenizer_input_dim)
+        self.feature_projectors[feature_name] = (
+            nn.Identity()
+            if input_dim == self.tokenizer_input_dim
+            else nn.Linear(input_dim, self.tokenizer_input_dim)
+        )
 
     def _get_embedding_layer(self, feature):
         name = feature.shared_with if feature.shared_with is not None else feature.name
@@ -141,7 +295,11 @@ class RankMixer(nn.Module):
 
     def _sequence_mask(self, feature, x):
         values = x[feature.name].long()
-        return values.ne(feature.padding_idx) if feature.padding_idx is not None else values.ne(-1)
+        return (
+            values.ne(feature.padding_idx)
+            if feature.padding_idx is not None
+            else values.ne(-1)
+        )
 
     def _pool_sequence(self, seq_emb, mask, mode):
         valid = mask.float()
@@ -158,7 +316,9 @@ class RankMixer(nn.Module):
             last_idx = (counts - 1).clamp_min(0)
             batch_idx = torch.arange(seq_emb.size(0), device=seq_emb.device)
             gathered = seq_emb[batch_idx, last_idx]
-            return torch.where(counts.unsqueeze(-1) > 0, gathered, torch.zeros_like(gathered))
+            return torch.where(
+                counts.unsqueeze(-1) > 0, gathered, torch.zeros_like(gathered)
+            )
         raise ValueError(f"Unsupported seq pool mode: {mode}")
 
     def _build_feature_map(self, x):
@@ -168,21 +328,29 @@ class RankMixer(nn.Module):
             feature_map[fea.name] = self._project_feature(fea.name, emb)
         for fea in self.dense_features:
             dense = x[fea.name].float()
-            feature_map[fea.name] = self._project_feature(fea.name, dense if dense.dim() > 1 else dense.unsqueeze(1))
+            feature_map[fea.name] = self._project_feature(
+                fea.name, dense if dense.dim() > 1 else dense.unsqueeze(1)
+            )
         for fea in self.context_sequence_features:
             if fea.pooling == "concat":
-                raise ValueError("RankMixer item/context SequenceFeature does not support pooling='concat'; use mean/sum/max/target.")
+                raise ValueError(
+                    "RankMixer item/context SequenceFeature does not support pooling='concat'; use mean/sum/max/target."
+                )
             seq_emb = self._get_embedding_layer(fea)(x[fea.name].long())
             mask = self._sequence_mask(fea, x)
+            # 上下文多值特征不保留逐步 token，而是先池化成一个固定向量再参与 tokenizer。
             pooled = self._pool_sequence(seq_emb, mask, fea.pooling)
             feature_map[fea.name] = self._project_feature(fea.name, pooled)
         seq_feature_map = {}
         for fea in self.sequence_features:
             if fea.pooling != "concat":
-                raise ValueError("RankMixer sequence_features must use pooling='concat' to preserve token-level semantics.")
+                raise ValueError(
+                    "RankMixer sequence_features must use pooling='concat' to preserve token-level semantics."
+                )
             seq_emb = self._get_embedding_layer(fea)(x[fea.name].long())
             mask = self._sequence_mask(fea, x)
             for mode in self.seq_pool_modes:
+                # 历史序列先生成多个 summary 视图，再决定是进入 tokenizer 还是作为额外 token 追加。
                 pooled = self._pool_sequence(seq_emb, mask, mode)
                 name = f"seq::{fea.name}::{mode}"
                 seq_feature_map[name] = self._project_feature(name, pooled)
@@ -194,19 +362,26 @@ class RankMixer(nn.Module):
     def _append_sequence_tokens(self, tokens, seq_feature_map):
         if not seq_feature_map:
             return tokens
-        seq_tokens = torch.stack([self.seq_append_projection(value) for value in seq_feature_map.values()], dim=1)
+        seq_tokens = torch.stack(
+            [self.seq_append_projection(value) for value in seq_feature_map.values()],
+            dim=1,
+        )
         return torch.cat([tokens, seq_tokens], dim=1)
 
     def forward(self, x):
+        # 第一步：把输入字典整理成 feature_map，区分普通特征和历史序列 summary。
         feature_map, seq_feature_map = self._build_feature_map(x)
+        # 第二步：把 feature-level 表示压缩成固定数量的语义 token。
         tokens = self.tokenizer(feature_map)
         if not self.include_seq_in_tokenization:
+            # 可选路径：历史序列 summary 不参与压缩，而是保留为独立 token 追加到后面。
             tokens = self._append_sequence_tokens(tokens, seq_feature_map)
         if self.add_cls_token:
             cls_token = self.cls_token.expand(tokens.size(0), -1, -1)
             tokens = torch.cat([cls_token, tokens], dim=1)
         tokens = self.input_ln(tokens)
         tokens = self.input_dropout(tokens)
+        # 第三步：encoder 负责 token 间交互；它不再接触原始字段，只处理已经语义化后的 token。
         encoded = self.encoder(tokens)
         if self.output_pooling in ("mean", "avg"):
             head_input = encoded.mean(dim=1)
@@ -216,6 +391,7 @@ class RankMixer(nn.Module):
             head_input = encoded[:, 0, :]
         else:
             raise ValueError(f"Unknown output_pooling: {self.output_pooling}")
+        # 第四步：pooling 后进入 CTR head，输出点击概率。
         head_input = self.head_dropout(head_input)
         head_hidden = gelu(self.head_dense1(head_input))
         head_hidden = self.head_dropout(head_hidden)

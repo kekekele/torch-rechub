@@ -18,7 +18,12 @@ def build_model(model_name, bundle, config):
             d_model=rankmixer_cfg["d_model"],
             num_layers=rankmixer_cfg["num_layers"],
             num_tokens=rankmixer_cfg["num_tokens"],
-            semantic_groups=build_rankmixer_semantic_groups(bundle["semantic_schema"], default_seq_pool_modes=tuple(rankmixer_cfg.get("seq_pool_modes", ("mean",)))),
+            semantic_groups=build_rankmixer_semantic_groups(
+                bundle["semantic_schema"],
+                default_seq_pool_modes=tuple(
+                    rankmixer_cfg.get("seq_pool_modes", ("mean",))
+                ),
+            ),
             seq_pool_modes=tuple(rankmixer_cfg.get("seq_pool_modes", ("mean",))),
             use_moe=use_moe,
             moe_experts=rankmixer_cfg["moe_experts"],

@@ -72,7 +72,15 @@ def _assign_semantic_groups(feature_names, group_rules):
 
 
 class SemanticTokenizer(nn.Module):
-    def __init__(self, feature_dims, target_tokens, d_model, semantic_groups=None, group_rules=None, token_projection="linear"):
+    def __init__(
+        self,
+        feature_dims,
+        target_tokens,
+        d_model,
+        semantic_groups=None,
+        group_rules=None,
+        token_projection="linear",
+    ):
         super().__init__()
         self.target_tokens = int(target_tokens)
         self.d_model = int(d_model)
@@ -91,11 +99,19 @@ class SemanticTokenizer(nn.Module):
         if groups:
             available_names = list(self.feature_dims.keys())
             for group_name, group_features in groups:
+                # 如果显式提供 semantic_groups，就为每个语义组准备一层投影：
+                # 组内多个 feature 先拼接，再投影成一个 token。
                 resolved = self._resolve_group_features(group_features, available_names)
-                input_dim = sum(int(self.feature_dims[name]) for name in resolved) if resolved else 1
+                input_dim = (
+                    sum(int(self.feature_dims[name]) for name in resolved)
+                    if resolved
+                    else 1
+                )
                 safe_name = _sanitize_group_name(group_name)
                 if safe_name not in self.group_projections:
-                    self.group_projections[safe_name] = nn.Linear(input_dim, self.d_model)
+                    self.group_projections[safe_name] = nn.Linear(
+                        input_dim, self.d_model
+                    )
             return
 
         feature_names = list(self.feature_dims.keys())
@@ -127,7 +143,9 @@ class SemanticTokenizer(nn.Module):
     def _get_group_projection(self, group_name, input_dim, device):
         group_name = _sanitize_group_name(group_name)
         if group_name not in self.group_projections:
-            self.group_projections[group_name] = nn.Linear(input_dim, self.d_model).to(device)
+            self.group_projections[group_name] = nn.Linear(input_dim, self.d_model).to(
+                device
+            )
         return self.group_projections[group_name]
 
     def _get_chunk_projection(self, input_dim, device):
@@ -148,6 +166,7 @@ class SemanticTokenizer(nn.Module):
                 resolved = self._resolve_group_features(group_features, feature_names)
                 if resolved:
                     tensors = [feature_map[name] for name in resolved]
+                    # 组内 feature 先拼起来，形成该语义组的联合表示。
                     concat = torch.cat(tensors, dim=-1)
                     input_dim = sum(feature_map[name].size(-1) for name in resolved)
                 else:
@@ -159,19 +178,28 @@ class SemanticTokenizer(nn.Module):
             if stacked.size(1) > self.target_tokens:
                 stacked = stacked[:, : self.target_tokens, :]
             elif stacked.size(1) < self.target_tokens:
-                pad = stacked.new_zeros(batch_size, self.target_tokens - stacked.size(1), self.d_model)
+                # 语义组数不足 target_tokens 时，补零 token；这样 encoder 看到的 token 数恒定。
+                pad = stacked.new_zeros(
+                    batch_size, self.target_tokens - stacked.size(1), self.d_model
+                )
                 stacked = torch.cat([stacked, pad], dim=1)
             return stacked
         ordered_indices = _assign_semantic_groups(feature_names, self.group_rules)
         ordered_names = [feature_names[i] for i in ordered_indices]
-        ordered_embeddings = torch.stack([feature_map[name] for name in ordered_names], dim=1)
+        ordered_embeddings = torch.stack(
+            [feature_map[name] for name in ordered_names], dim=1
+        )
         feature_count = len(ordered_names)
         target_tokens = self.target_tokens if self.target_tokens > 0 else feature_count
         token_size = int(math.ceil(feature_count / float(target_tokens)))
         pad_needed = target_tokens * token_size - feature_count
         if pad_needed > 0:
-            pad = ordered_embeddings.new_zeros(batch_size, pad_needed, ordered_embeddings.size(-1))
+            pad = ordered_embeddings.new_zeros(
+                batch_size, pad_needed, ordered_embeddings.size(-1)
+            )
             ordered_embeddings = torch.cat([ordered_embeddings, pad], dim=1)
-        flat = ordered_embeddings.reshape(batch_size, target_tokens, token_size * ordered_embeddings.size(-1))
+        flat = ordered_embeddings.reshape(
+            batch_size, target_tokens, token_size * ordered_embeddings.size(-1)
+        )
         projection = self._get_chunk_projection(flat.size(-1), device)
         return projection(flat)

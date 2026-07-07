@@ -19,7 +19,9 @@ def ensure_source_files(config):
             missing.append(table_path)
     if missing:
         missing_list = "\n".join(f"  - {path}" for path in missing)
-        raise FileNotFoundError(f"Dataset source files are required and must already exist:\n{missing_list}")
+        raise FileNotFoundError(
+            f"Dataset source files are required and must already exist:\n{missing_list}"
+        )
 
 
 def _resolve_table_path(data_dir, table_cfg):
@@ -51,7 +53,9 @@ def _apply_transform(frame, transform):
         separator = str(transform.get("sep", "|"))
         default = transform.get("default", "")
         values = frame[source].fillna(default).astype(str)
-        frame[target] = values.apply(lambda value: value.split(separator)[0] if value else default)
+        frame[target] = values.apply(
+            lambda value: value.split(separator)[0] if value else default
+        )
         return frame
 
     if transform_type == "binary_compare":
@@ -152,7 +156,9 @@ def _normalize_feature_entry(entry):
 def _normalize_sequence_entry(entry):
     normalized = _normalize_feature_entry(entry)
     normalized["shared_with"] = normalized.get("shared_with")
-    normalized["rankmixer_pooling"] = str(normalized.get("rankmixer_pooling", "concat")).lower()
+    normalized["rankmixer_pooling"] = str(
+        normalized.get("rankmixer_pooling", "concat")
+    ).lower()
     normalized["dcn_pooling"] = str(normalized.get("dcn_pooling", "mean")).lower()
     normalized["value_sep"] = str(normalized.get("value_sep", ","))
     return normalized
@@ -161,7 +167,9 @@ def _normalize_sequence_entry(entry):
 def normalize_three_table_spec(config):
     sample_builder = dict(config.get("sample_builder", {}))
     feature_cfg = dict(config.get("features", {}))
-    semantic_schema = normalize_rankmixer_group_schema(config.get("semantic_schema", []))
+    semantic_schema = normalize_rankmixer_group_schema(
+        config.get("semantic_schema", [])
+    )
 
     split_cfg = dict(sample_builder.get("split", {}))
     split_type = str(split_cfg.get("type", "global_time_ratio")).lower()
@@ -169,25 +177,52 @@ def normalize_three_table_spec(config):
     if split_type != "global_time_ratio":
         raise ValueError(f"Unsupported split type: {split_type}")
     if len(split_ratios) != 3 or abs(sum(split_ratios) - 1.0) > 1e-6:
-        raise ValueError(f"split.ratios must contain three values summing to 1.0, got {split_ratios}")
+        raise ValueError(
+            f"split.ratios must contain three values summing to 1.0, got {split_ratios}"
+        )
 
     normalized = {
         "sample_builder": {
             "user_id_col": str(sample_builder.get("user_id_col", "user_id")),
             "timestamp_col": str(sample_builder.get("timestamp_col", "timestamp")),
             "label_col": str(sample_builder.get("label_col", "label")),
-            "max_seq_len": int(sample_builder.get("max_seq_len", config.get("dataset_params", {}).get("max_seq_len", 50))),
-            "history_positive_only": bool(sample_builder.get("history_filter", {}).get("positive_only", True)),
+            "max_seq_len": int(
+                sample_builder.get(
+                    "max_seq_len",
+                    config.get("dataset_params", {}).get("max_seq_len", 50),
+                )
+            ),
+            "history_positive_only": bool(
+                sample_builder.get("history_filter", {}).get("positive_only", True)
+            ),
             "split_type": split_type,
             "split_ratios": split_ratios,
         },
         "features": {
-            "user_sparse": [_normalize_feature_entry(item) for item in feature_cfg.get("user_sparse", [])],
-            "user_dense": [_normalize_feature_entry(item) for item in feature_cfg.get("user_dense", [])],
-            "item_sparse": [_normalize_feature_entry(item) for item in feature_cfg.get("item_sparse", [])],
-            "item_dense": [_normalize_feature_entry(item) for item in feature_cfg.get("item_dense", [])],
-            "item_sequence": [_normalize_sequence_entry(item) for item in feature_cfg.get("item_sequence", [])],
-            "sequence": [_normalize_sequence_entry(item) for item in feature_cfg.get("sequence", [])],
+            "user_sparse": [
+                _normalize_feature_entry(item)
+                for item in feature_cfg.get("user_sparse", [])
+            ],
+            "user_dense": [
+                _normalize_feature_entry(item)
+                for item in feature_cfg.get("user_dense", [])
+            ],
+            "item_sparse": [
+                _normalize_feature_entry(item)
+                for item in feature_cfg.get("item_sparse", [])
+            ],
+            "item_dense": [
+                _normalize_feature_entry(item)
+                for item in feature_cfg.get("item_dense", [])
+            ],
+            "item_sequence": [
+                _normalize_sequence_entry(item)
+                for item in feature_cfg.get("item_sequence", [])
+            ],
+            "sequence": [
+                _normalize_sequence_entry(item)
+                for item in feature_cfg.get("sequence", [])
+            ],
             "embedding_dim": int(feature_cfg.get("embedding_dim", 16)),
             "padding_idx": feature_cfg.get("padding_idx", 0),
         },
@@ -207,7 +242,9 @@ def _split_multi_value(value, separator=","):
     return [item.strip() for item in text.split(separator) if item.strip()]
 
 
-def encode_tabular_features(data, sparse_cols, dense_cols=None, label_col="label", timestamp_col="timestamp"):
+def encode_tabular_features(
+    data, sparse_cols, dense_cols=None, label_col="label", timestamp_col="timestamp"
+):
     encoded = data.copy()
     for col in sparse_cols:
         encoder = LabelEncoder()
@@ -224,10 +261,14 @@ def encode_sequence_features(data, sequence_specs):
     for feature in sequence_specs:
         source = feature["source"]
         separator = feature.get("value_sep", ",")
-        token_lists = encoded[source].apply(lambda value: _split_multi_value(value, separator=separator))
+        token_lists = encoded[source].apply(
+            lambda value: _split_multi_value(value, separator=separator)
+        )
         tokens = sorted({token for items in token_lists for token in items})
         token_to_index = {token: idx + 1 for idx, token in enumerate(tokens)}
-        encoded[source] = token_lists.apply(lambda items: [token_to_index[token] for token in items])
+        encoded[source] = token_lists.apply(
+            lambda items: [token_to_index[token] for token in items]
+        )
     return encoded
 
 
@@ -241,7 +282,11 @@ def build_sequence_samples(data, spec, desc="build ranking samples"):
     history_positive_only = sample_cfg["history_positive_only"]
 
     user_feature_specs = feature_cfg["user_sparse"] + feature_cfg["user_dense"]
-    item_feature_specs = feature_cfg["item_sparse"] + feature_cfg["item_dense"] + feature_cfg["item_sequence"]
+    item_feature_specs = (
+        feature_cfg["item_sparse"]
+        + feature_cfg["item_dense"]
+        + feature_cfg["item_sequence"]
+    )
     sequence_specs = feature_cfg["sequence"]
 
     samples = []
@@ -260,14 +305,20 @@ def build_sequence_samples(data, spec, desc="build ranking samples"):
                 for feature in item_feature_specs:
                     sample[feature["name"]] = getattr(row, feature["source"])
                 for feature in sequence_specs:
-                    sample[feature["name"]] = list(current_histories[feature["name"]][-max_seq_len:])
+                    sample[feature["name"]] = list(
+                        current_histories[feature["name"]][-max_seq_len:]
+                    )
                 samples.append(sample)
             if not history_positive_only or int(getattr(row, label_col)) == 1:
                 for feature in sequence_specs:
-                    current_histories[feature["name"]].append(getattr(row, feature["source"]))
+                    current_histories[feature["name"]].append(
+                        getattr(row, feature["source"])
+                    )
 
     if not samples:
-        raise ValueError("No ranking samples were constructed from the normalized interaction table.")
+        raise ValueError(
+            "No ranking samples were constructed from the normalized interaction table."
+        )
     return pd.DataFrame(samples).sort_values(timestamp_col).reset_index(drop=True)
 
 
@@ -292,7 +343,12 @@ def build_prediction_records(frame, spec):
     records = frame.copy().reset_index(drop=True)
     feature_cfg = spec["features"]
     key_columns = []
-    for feature in feature_cfg["user_sparse"] + feature_cfg["user_dense"] + feature_cfg["item_sparse"] + feature_cfg["item_dense"]:
+    for feature in (
+        feature_cfg["user_sparse"]
+        + feature_cfg["user_dense"]
+        + feature_cfg["item_sparse"]
+        + feature_cfg["item_dense"]
+    ):
         if feature["name"] not in key_columns:
             key_columns.append(feature["name"])
     for feature in feature_cfg["item_sequence"] + feature_cfg["sequence"]:
@@ -307,7 +363,9 @@ def build_prediction_records(frame, spec):
     result = records[export_columns].copy()
     for column in result.columns:
         result[column] = result[column].apply(
-            lambda value: ",".join(map(str, value)) if isinstance(value, list) else value
+            lambda value: (
+                ",".join(map(str, value)) if isinstance(value, list) else value
+            )
         )
     return result
 
@@ -353,19 +411,40 @@ def build_feature_columns(encoded, spec):
     embed_dim = feature_cfg["embedding_dim"]
     padding_idx = feature_cfg["padding_idx"]
 
+    # 1) 用户/物品的离散字段会变成 SparseFeature，后续走 embedding lookup。
     user_features = [
-        SparseFeature(feature["name"], vocab_size=int(encoded[feature["source"]].max()) + 1, embed_dim=embed_dim, padding_idx=padding_idx)
+        SparseFeature(
+            feature["name"],
+            vocab_size=int(encoded[feature["source"]].max()) + 1,
+            embed_dim=embed_dim,
+            padding_idx=padding_idx,
+        )
         for feature in feature_cfg["user_sparse"]
     ]
-    user_dense_features = [DenseFeature(feature["name"]) for feature in feature_cfg["user_dense"]]
+    # 2) 连续字段保留为 DenseFeature，后续直接以数值输入，再投影到 tokenizer 统一维度。
+    user_dense_features = [
+        DenseFeature(feature["name"]) for feature in feature_cfg["user_dense"]
+    ]
     item_features = [
-        SparseFeature(feature["name"], vocab_size=int(encoded[feature["source"]].max()) + 1, embed_dim=embed_dim, padding_idx=padding_idx)
+        SparseFeature(
+            feature["name"],
+            vocab_size=int(encoded[feature["source"]].max()) + 1,
+            embed_dim=embed_dim,
+            padding_idx=padding_idx,
+        )
         for feature in feature_cfg["item_sparse"]
     ]
-    item_dense_features = [DenseFeature(feature["name"]) for feature in feature_cfg["item_dense"]]
+    item_dense_features = [
+        DenseFeature(feature["name"]) for feature in feature_cfg["item_dense"]
+    ]
     item_sequence_features = []
     for feature in feature_cfg["item_sequence"]:
-        vocab_size = max((max(items) for items in encoded[feature["source"]] if items), default=0) + 1
+        vocab_size = (
+            max(
+                (max(items) for items in encoded[feature["source"]] if items), default=0
+            )
+            + 1
+        )
         item_sequence_features.append(
             SequenceFeature(
                 feature["name"],
@@ -381,6 +460,7 @@ def build_feature_columns(encoded, spec):
     dcn_seq_features = []
     for feature in feature_cfg["sequence"]:
         vocab_size = int(encoded[feature["source"]].max()) + 1
+        # RankMixer 的真实历史序列必须保留 concat 语义，模型内部再决定如何做 summary。
         rankmixer_seq_features.append(
             SequenceFeature(
                 feature["name"],
@@ -391,6 +471,7 @@ def build_feature_columns(encoded, spec):
                 padding_idx=padding_idx,
             )
         )
+        # 同一份原始序列也会给 DCN 构一套 feature，但 pooling 规则可以不同。
         dcn_seq_features.append(
             SequenceFeature(
                 feature["name"],
@@ -412,20 +493,54 @@ def build_feature_columns(encoded, spec):
             shared_with=feature.get("shared_with"),
             padding_idx=padding_idx,
         )
-        for feature, current_feature in zip(feature_cfg["item_sequence"], item_sequence_features)
+        for feature, current_feature in zip(
+            feature_cfg["item_sequence"], item_sequence_features
+        )
     ]
 
-    rankmixer_base_features = user_features + user_dense_features + item_features + item_dense_features + rankmixer_item_sequence_features
-    dcn_base_features = user_features + user_dense_features + item_features + item_dense_features + dcn_item_sequence_features
-    return dcn_base_features, rankmixer_base_features, dcn_seq_features, rankmixer_seq_features, spec["semantic_schema"]
+    # RankMixer 的 base_features 只包含静态特征和上下文多值特征；
+    # 用户历史序列单独通过 rankmixer_seq_features 传入模型，避免和上下文多值特征混淆。
+    rankmixer_base_features = (
+        user_features
+        + user_dense_features
+        + item_features
+        + item_dense_features
+        + rankmixer_item_sequence_features
+    )
+    dcn_base_features = (
+        user_features
+        + user_dense_features
+        + item_features
+        + item_dense_features
+        + dcn_item_sequence_features
+    )
+    return (
+        dcn_base_features,
+        rankmixer_base_features,
+        dcn_seq_features,
+        rankmixer_seq_features,
+        spec["semantic_schema"],
+    )
 
 
-def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="build ranking samples"):
+def prepare_three_table_dataset(
+    config, normalized_data, dataset_name, desc="build ranking samples"
+):
     spec = normalize_three_table_spec(config)
     feature_cfg = spec["features"]
     sample_cfg = spec["sample_builder"]
-    sparse_cols = sorted({feature["source"] for feature in feature_cfg["user_sparse"] + feature_cfg["item_sparse"] + feature_cfg["sequence"]})
-    dense_cols = [feature["source"] for feature in feature_cfg["user_dense"] + feature_cfg["item_dense"]]
+    sparse_cols = sorted(
+        {
+            feature["source"]
+            for feature in feature_cfg["user_sparse"]
+            + feature_cfg["item_sparse"]
+            + feature_cfg["sequence"]
+        }
+    )
+    dense_cols = [
+        feature["source"]
+        for feature in feature_cfg["user_dense"] + feature_cfg["item_dense"]
+    ]
     encoded = encode_tabular_features(
         normalized_data,
         sparse_cols=sparse_cols,
@@ -450,8 +565,16 @@ def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="bui
         y_test=test_y,
         batch_size=config["training"]["batch_size"],
     )
-    dcn_base_features, rankmixer_base_features, dcn_seq_features, rankmixer_seq_features, semantic_schema = build_feature_columns(encoded, spec)
-    print(f"{dataset_name} ranking samples: train={len(train_y)}, valid={len(val_y)}, test={len(test_y)}")
+    (
+        dcn_base_features,
+        rankmixer_base_features,
+        dcn_seq_features,
+        rankmixer_seq_features,
+        semantic_schema,
+    ) = build_feature_columns(encoded, spec)
+    print(
+        f"{dataset_name} ranking samples: train={len(train_y)}, valid={len(val_y)}, test={len(test_y)}"
+    )
     return {
         "dataset": str(config["dataset"]),
         "train_dl": train_dl,
@@ -467,6 +590,10 @@ def prepare_three_table_dataset(config, normalized_data, dataset_name, desc="bui
     }
 
 
-def prepare_three_table_dataset_from_config(config, dataset_name, desc="build ranking samples"):
+def prepare_three_table_dataset_from_config(
+    config, dataset_name, desc="build ranking samples"
+):
     ensure_source_files(config)
-    return prepare_three_table_dataset(config, load_source_frame(config), dataset_name=dataset_name, desc=desc)
+    return prepare_three_table_dataset(
+        config, load_source_frame(config), dataset_name=dataset_name, desc=desc
+    )

@@ -4,13 +4,25 @@ from ..basic.layers import CrossNetMix, CrossNetV2, EmbeddingLayer, LR, MLP
 
 
 class DCNv2(torch.nn.Module):
-    def __init__(self, features, n_cross_layers, mlp_params, model_structure="parallel", use_low_rank_mixture=True, low_rank=32, num_experts=4, **kwargs):
+    def __init__(
+        self,
+        features,
+        n_cross_layers,
+        mlp_params,
+        model_structure="parallel",
+        use_low_rank_mixture=True,
+        low_rank=32,
+        num_experts=4,
+        **kwargs,
+    ):
         super().__init__()
         self.features = features
         self.dims = sum(fea.embed_dim for fea in features)
         self.embedding = EmbeddingLayer(features)
         if use_low_rank_mixture:
-            self.crossnet = CrossNetMix(self.dims, n_cross_layers, low_rank=low_rank, num_experts=num_experts)
+            self.crossnet = CrossNetMix(
+                self.dims, n_cross_layers, low_rank=low_rank, num_experts=num_experts
+            )
         else:
             self.crossnet = CrossNetV2(self.dims, n_cross_layers)
         self.model_structure = model_structure
