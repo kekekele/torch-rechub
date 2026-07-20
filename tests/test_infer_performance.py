@@ -5,6 +5,7 @@ import json
 import math
 import random
 import re
+import shutil
 import statistics
 import time
 from dataclasses import dataclass, asdict
@@ -13,10 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 
-
 # =========================
 # 配置区：默认参数与目录工具
 # =========================
+
 
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,7 @@ def print_table(headers: List[str], rows: List[List[Any]]) -> None:
 # 数据结构区：压测结果对象
 # =========================
 
+
 @dataclass
 class RequestMetric:
     request_index: int
@@ -98,6 +100,7 @@ class NpuMetric:
 # 核心逻辑区 1：请求生成
 # =========================
 
+
 class RequestGenerator:
     """
     生成批量 request.json 请求文件。
@@ -132,7 +135,9 @@ class RequestGenerator:
             {"scenario_name": "heavy", "history_min": 100, "history_max": 200},
         ]
 
-    def build_history(self, history_len: int, base_timestamp: int) -> List[Dict[str, Any]]:
+    def build_history(
+        self, history_len: int, base_timestamp: int
+    ) -> List[Dict[str, Any]]:
         """
         生成 history 行为序列。
 
@@ -191,7 +196,9 @@ class RequestGenerator:
         for idx in range(self.total_requests):
             scenario = scenarios[idx % len(scenarios)]
             payload = self.build_request(scenario)
-            file_path = self.output_dir / f"request_{idx:05d}_{scenario['scenario_name']}.json"
+            file_path = (
+                self.output_dir / f"request_{idx:05d}_{scenario['scenario_name']}.json"
+            )
             with file_path.open("w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False, indent=2)
             files.append(file_path)
@@ -202,6 +209,7 @@ class RequestGenerator:
 # =========================
 # 核心逻辑区 2：Ascend NPU 采样
 # =========================
+
 
 class AscendNpuSampler:
     """
@@ -228,7 +236,40 @@ class AscendNpuSampler:
     def stop(self) -> None:
         self._stop = True
 
-    def _parse_output(self, raw: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    def _command_name(self) -> str:
+        return self.command.strip().split()[0]
+
+    def _command_exists(self) -> bool:
+        return shutil.which(self._command_name()) is not None
+
+    def _extract_memory_pair(self, text: str) -> Tuple[Optional[int], Optional[int]]:
+        """
+        提取显存占用。
+
+        兼容几种常见格式：
+        1. 27162 / 32768 MB
+        2. 27162/32768MB
+        3. 27162 / 32768（部分 npu-smi 版本不带 MB）
+        """
+        patterns = [
+            r"(\d+)\s*/\s*(\d+)\s*MB",
+            r"(\d+)\s*/\s*(\d+)\s*MiB",
+            r"(\d+)\s*/\s*(\d+)",
+        ]
+
+        for pattern in patterns:
+            candidates = re.findall(pattern, text, re.IGNORECASE)
+            for used_str, total_str in candidates:
+                used_mb = int(used_str)
+                total_mb = int(total_str)
+                if 0 <= used_mb <= total_mb and total_mb >= 1024:
+                    return used_mb, total_mb
+
+        return None, None
+
+    def _parse_output(
+        self, raw: str
+    ) -> Tuple[Optional[int], Optional[int], Optional[int]]:
         """
         尽量从命令输出中提取显存和利用率。
 
@@ -243,20 +284,21 @@ class AscendNpuSampler:
             if self.device_id not in line and f" {self.device_id} " not in line:
                 continue
 
-            mem_match = re.search(r"(\d+)\s*/\s*(\d+)\s*MB", line, re.IGNORECASE)
-            util_match = re.search(r"(\d+)\s*%", line)
+            used_mb, total_mb = self._extract_memory_pair(line)
 
-            if mem_match:
-                used_mb = int(mem_match.group(1))
-                total_mb = int(mem_match.group(2))
+            util_match = re.search(r"(\d+)\s*%", line)
             if util_match:
                 utilization_pct = int(util_match.group(1))
 
+            if (
+                used_mb is not None
+                and total_mb is not None
+                and utilization_pct is not None
+            ):
+                return used_mb, total_mb, utilization_pct
+
         if used_mb is None or total_mb is None:
-            mem_candidates = re.findall(r"(\d+)\s*/\s*(\d+)\s*MB", raw, re.IGNORECASE)
-            if mem_candidates:
-                used_mb = int(mem_candidates[0][0])
-                total_mb = int(mem_candidates[0][1])
+            used_mb, total_mb = self._extract_memory_pair(raw)
 
         if utilization_pct is None:
             util_candidates = re.findall(r"(\d+)\s*%", raw)
@@ -267,6 +309,19 @@ class AscendNpuSampler:
 
     async def run(self) -> None:
         if not self.enabled:
+            return
+
+        if not self._command_exists():
+            self.records.append(
+                NpuMetric(
+                    ts_ms=now_ms(),
+                    device_id=self.device_id,
+                    used_mb=None,
+                    total_mb=None,
+                    utilization_pct=None,
+                    raw=f"sampler_error: command_not_found: {self._command_name()}",
+                )
+            )
             return
 
         while not self._stop:
@@ -314,6 +369,7 @@ class AscendNpuSampler:
 # =========================
 # 核心逻辑区 3：并发压测执行
 # =========================
+
 
 class LoadTester:
     """
@@ -395,12 +451,18 @@ class LoadTester:
             if "success" in parsed_body:
                 business_success = 1 if bool(parsed_body.get("success")) else 0
                 response_code = str(parsed_body.get("code", ""))
-                response_message = str(parsed_body.get("message", parsed_body.get("msg", "")))
+                response_message = str(
+                    parsed_body.get("message", parsed_body.get("msg", ""))
+                )
             elif "code" in parsed_body:
                 code_value = parsed_body.get("code")
                 response_code = str(code_value)
-                response_message = str(parsed_body.get("message", parsed_body.get("msg", "")))
-                business_success = 1 if str(code_value).upper() in {"0", "OK", "SUCCESS"} else 0
+                response_message = str(
+                    parsed_body.get("message", parsed_body.get("msg", ""))
+                )
+                business_success = (
+                    1 if str(code_value).upper() in {"0", "OK", "SUCCESS"} else 0
+                )
             else:
                 business_success = http_success
         else:
@@ -428,7 +490,9 @@ class LoadTester:
         保存完整响应，便于后续排查异常样本和核对业务结果。
         """
         ensure_dir(self.responses_dir)
-        response_path = self.responses_dir / f"response_{request_index:05d}_{scenario_name}.json"
+        response_path = (
+            self.responses_dir / f"response_{request_index:05d}_{scenario_name}.json"
+        )
         record = {
             "request_index": request_index,
             "scenario_name": scenario_name,
@@ -493,7 +557,11 @@ class LoadTester:
                         response_message,
                         parsed_body,
                     ) = self.parse_business_result(status, response_text)
-                    final_success = 1 if transport_success and http_success and business_success else 0
+                    final_success = (
+                        1
+                        if transport_success and http_success and business_success
+                        else 0
+                    )
             except Exception as exc:
                 error = str(exc)
 
@@ -536,7 +604,9 @@ class LoadTester:
         connector = aiohttp.TCPConnector(limit=0, ssl=False)
         semaphore = asyncio.Semaphore(self.concurrency)
 
-        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+        async with aiohttp.ClientSession(
+            timeout=timeout, connector=connector
+        ) as session:
             tasks = []
             for idx, file_name, payload in loaded_requests:
                 scenario_name = self.detect_scenario(file_name)
@@ -558,6 +628,7 @@ class LoadTester:
 # =========================
 # 核心逻辑区 4：结果统计与输出
 # =========================
+
 
 class ReportWriter:
     """
@@ -642,6 +713,8 @@ class ReportWriter:
                 "http_success_rate_pct": 0.0,
                 "business_success_rate_pct": 0.0,
                 "success_rate_pct": 0.0,
+                "npu_sample_count": 0,
+                "npu_valid_sample_count": 0,
                 "throughput_qps": 0.0,
                 "avg_latency_ms": 0.0,
                 "p50_latency_ms": 0.0,
@@ -671,15 +744,29 @@ class ReportWriter:
         end_ts = max(item.end_ts_ms for item in self.request_metrics)
         wall_time_sec = max((end_ts - start_ts) / 1000.0, 0.001)
 
-        npu_used_values = [item.used_mb for item in self.npu_metrics if item.used_mb is not None]
-        npu_total_values = [item.total_mb for item in self.npu_metrics if item.total_mb is not None]
+        npu_used_values = [
+            item.used_mb for item in self.npu_metrics if item.used_mb is not None
+        ]
+        npu_total_values = [
+            item.total_mb for item in self.npu_metrics if item.total_mb is not None
+        ]
 
         return {
             "total_requests": len(self.request_metrics),
-            "transport_success_rate_pct": round(sum(transport_successes) / len(transport_successes) * 100, 2),
-            "http_success_rate_pct": round(sum(http_successes) / len(http_successes) * 100, 2),
-            "business_success_rate_pct": round(sum(business_successes) / len(business_successes) * 100, 2),
-            "success_rate_pct": round(sum(final_successes) / len(final_successes) * 100, 2),
+            "transport_success_rate_pct": round(
+                sum(transport_successes) / len(transport_successes) * 100, 2
+            ),
+            "http_success_rate_pct": round(
+                sum(http_successes) / len(http_successes) * 100, 2
+            ),
+            "business_success_rate_pct": round(
+                sum(business_successes) / len(business_successes) * 100, 2
+            ),
+            "success_rate_pct": round(
+                sum(final_successes) / len(final_successes) * 100, 2
+            ),
+            "npu_sample_count": len(self.npu_metrics),
+            "npu_valid_sample_count": len(npu_used_values),
             "throughput_qps": round(len(self.request_metrics) / wall_time_sec, 2),
             "avg_latency_ms": round(statistics.mean(latencies), 2),
             "p50_latency_ms": round(percentile(latencies, 50), 2),
@@ -691,7 +778,9 @@ class ReportWriter:
             "avg_request_bytes": round(statistics.mean(request_sizes), 2),
             "avg_response_bytes": round(statistics.mean(response_sizes), 2),
             "npu_used_mb_min": min(npu_used_values) if npu_used_values else None,
-            "npu_used_mb_avg": round(statistics.mean(npu_used_values), 2) if npu_used_values else None,
+            "npu_used_mb_avg": (
+                round(statistics.mean(npu_used_values), 2) if npu_used_values else None
+            ),
             "npu_used_mb_max": max(npu_used_values) if npu_used_values else None,
             "npu_total_mb": max(npu_total_values) if npu_total_values else None,
         }
@@ -719,7 +808,9 @@ class ReportWriter:
                 {
                     "scenario_name": scenario_name,
                     "total_requests": len(items),
-                    "success_rate_pct": round(sum(final_successes) / len(final_successes) * 100, 2),
+                    "success_rate_pct": round(
+                        sum(final_successes) / len(final_successes) * 100, 2
+                    ),
                     "throughput_qps": round(len(items) / wall_time_sec, 2),
                     "avg_latency_ms": round(statistics.mean(latencies), 2),
                     "p95_latency_ms": round(percentile(latencies, 95), 2),
@@ -756,13 +847,17 @@ class ReportWriter:
             for row in rows:
                 writer.writerow(row)
 
-    def print_summary(self, summary: Dict[str, Any], scenario_rows: List[Dict[str, Any]]) -> None:
+    def print_summary(
+        self, summary: Dict[str, Any], scenario_rows: List[Dict[str, Any]]
+    ) -> None:
         total_rows = [
             ["total_requests", summary["total_requests"]],
             ["transport_success_rate_pct", summary["transport_success_rate_pct"]],
             ["http_success_rate_pct", summary["http_success_rate_pct"]],
             ["business_success_rate_pct", summary["business_success_rate_pct"]],
             ["success_rate_pct", summary["success_rate_pct"]],
+            ["npu_sample_count", summary["npu_sample_count"]],
+            ["npu_valid_sample_count", summary["npu_valid_sample_count"]],
             ["throughput_qps", summary["throughput_qps"]],
             ["avg_latency_ms", summary["avg_latency_ms"]],
             ["p50_latency_ms", summary["p50_latency_ms"]],
@@ -819,10 +914,21 @@ def print_metric_explanations() -> None:
     """
     rows = [
         ["total_requests", "本次压测总请求数"],
-        ["transport_success_rate_pct", "成功拿到响应的请求占比，不含连接失败和超时异常"],
+        [
+            "transport_success_rate_pct",
+            "成功拿到响应的请求占比，不含连接失败和超时异常",
+        ],
         ["http_success_rate_pct", "HTTP 状态码为 2xx 的请求占比"],
-        ["business_success_rate_pct", "按响应体 success/code 字段判断为业务成功的请求占比"],
+        [
+            "business_success_rate_pct",
+            "按响应体 success/code 字段判断为业务成功的请求占比",
+        ],
         ["success_rate_pct", "最终成功率，要求传输成功、HTTP 成功、业务成功同时成立"],
+        ["npu_sample_count", "NPU 采样总次数，用于判断采样流程是否真正执行"],
+        [
+            "npu_valid_sample_count",
+            "成功解析出显存占用的采样次数；为 0 时，npu_used_mb_* 通常会是 None",
+        ],
         ["throughput_qps", "每秒处理请求数，反映整体吞吐能力"],
         ["avg_latency_ms", "平均响应延迟，单位毫秒"],
         ["p50_latency_ms", "50 分位延迟，中位数"],
@@ -836,7 +942,10 @@ def print_metric_explanations() -> None:
         ["npu_used_mb_min", "压测期间 NPU 显存最小占用，单位 MB"],
         ["npu_used_mb_avg", "压测期间 NPU 显存平均占用，单位 MB"],
         ["npu_used_mb_max", "压测期间 NPU 显存最大占用，单位 MB"],
-        ["npu_total_mb", "NPU 总显存容量，单位 MB"],
+        [
+            "npu_total_mb",
+            "NPU 总显存容量，单位 MB；如果采样命令不可用或解析失败会显示 None",
+        ],
         ["response_file", "每次请求对应的完整响应落盘文件，便于排查"],
     ]
     print("\n=== Metric Explanations ===")
@@ -846,6 +955,7 @@ def print_metric_explanations() -> None:
 # =========================
 # 主流程编排区
 # =========================
+
 
 async def main_async(args: argparse.Namespace) -> None:
     """
@@ -900,7 +1010,9 @@ async def main_async(args: argparse.Namespace) -> None:
         responses_dir=responses_dir,
     )
 
-    sampler_task = asyncio.create_task(sampler.run()) if not args.disable_npu_sampler else None
+    sampler_task = (
+        asyncio.create_task(sampler.run()) if not args.disable_npu_sampler else None
+    )
 
     try:
         request_metrics = await tester.run()
@@ -936,21 +1048,34 @@ async def main_async(args: argparse.Namespace) -> None:
 # 参数入口区
 # =========================
 
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Inference service performance test tool")
+    parser = argparse.ArgumentParser(
+        description="Inference service performance test tool"
+    )
 
     parser.add_argument("--endpoint", required=True, help="外层推理服务 HTTP 地址")
     parser.add_argument("--output-dir", default="./perf_output", help="输出目录")
-    parser.add_argument("--total-requests", type=int, default=300, help="生成并发送的总请求数")
+    parser.add_argument(
+        "--total-requests", type=int, default=300, help="生成并发送的总请求数"
+    )
     parser.add_argument("--concurrency", type=int, default=20, help="并发请求数")
-    parser.add_argument("--timeout-sec", type=float, default=10.0, help="HTTP 超时时间，单位秒")
-    parser.add_argument("--seed", type=int, default=20260720, help="随机种子，便于复现实验")
+    parser.add_argument(
+        "--timeout-sec", type=float, default=10.0, help="HTTP 超时时间，单位秒"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=20260720, help="随机种子，便于复现实验"
+    )
     parser.add_argument("--auth-token", default="", help="可选 Bearer Token")
     parser.add_argument("--metadata-file", default="", help="固定 _metadata 模板文件")
 
-    parser.add_argument("--disable-npu-sampler", action="store_true", help="关闭 Ascend NPU 指标采样")
+    parser.add_argument(
+        "--disable-npu-sampler", action="store_true", help="关闭 Ascend NPU 指标采样"
+    )
     parser.add_argument("--npu-device-id", default="0", help="Ascend 设备号")
-    parser.add_argument("--npu-sample-interval-sec", type=float, default=1.0, help="NPU 采样周期")
+    parser.add_argument(
+        "--npu-sample-interval-sec", type=float, default=1.0, help="NPU 采样周期"
+    )
     parser.add_argument("--npu-command", default="npu-smi info", help="NPU 采样命令")
 
     return parser
@@ -963,9 +1088,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    '''python test_infer_performance.py \
+    """python test_infer_performance.py \
   --endpoint http://127.0.0.1:8080/infer \
   --total-requests 600 \
   --concurrency 50 \
-  --output-dir ./perf_run_01'''
+  --output-dir ./perf_run_01"""
     main()
