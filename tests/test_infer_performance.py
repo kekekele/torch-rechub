@@ -77,7 +77,11 @@ class RequestMetric:
     uid: str
     history_len: int
     start_ts_ms: int
+    send_ts_ms: int
     end_ts_ms: int
+    queue_wait_ms: float
+    service_latency_ms: float
+    end_to_end_latency_ms: float
     latency_ms: float
     status: int
     transport_success: int
@@ -633,9 +637,11 @@ class LoadTester:
         parsed_body: Any = None
 
         start_ts = now_ms()
+        send_ts = start_ts
 
         async with semaphore:
             try:
+                send_ts = now_ms()
                 async with session.post(
                     self.endpoint,
                     data=request_body,
@@ -662,6 +668,9 @@ class LoadTester:
                 error = str(exc)
 
         end_ts = now_ms()
+        queue_wait_ms = float(max(send_ts - start_ts, 0))
+        service_latency_ms = float(max(end_ts - send_ts, 0))
+        end_to_end_latency_ms = float(end_ts - start_ts)
         response_file = self.save_response(
             request_index=request_index,
             scenario_name=scenario_name,
@@ -678,8 +687,12 @@ class LoadTester:
                 uid=uid,
                 history_len=history_len,
                 start_ts_ms=start_ts,
+                send_ts_ms=send_ts,
                 end_ts_ms=end_ts,
-                latency_ms=float(end_ts - start_ts),
+                queue_wait_ms=queue_wait_ms,
+                service_latency_ms=service_latency_ms,
+                end_to_end_latency_ms=end_to_end_latency_ms,
+                latency_ms=end_to_end_latency_ms,
                 status=status,
                 transport_success=transport_success,
                 http_success=http_success,
@@ -757,7 +770,11 @@ class ReportWriter:
                 "uid",
                 "history_len",
                 "start_ts_ms",
+                "send_ts_ms",
                 "end_ts_ms",
+                "queue_wait_ms",
+                "service_latency_ms",
+                "end_to_end_latency_ms",
                 "latency_ms",
                 "status",
                 "transport_success",
@@ -812,26 +829,26 @@ class ReportWriter:
                 "npu_sample_count": 0,
                 "npu_valid_sample_count": 0,
                 "throughput_qps": 0.0,
-                "avg_latency_ms": 0.0,
-                "p50_latency_ms": 0.0,
-                "p90_latency_ms": 0.0,
-                "p95_latency_ms": 0.0,
-                "p99_latency_ms": 0.0,
-                "max_latency_ms": 0.0,
+                "avg_queue_wait_ms": 0.0,
+                "avg_service_latency_ms": 0.0,
+                "avg_end_to_end_latency_ms": 0.0,
+                "p95_service_latency_ms": 0.0,
+                "p99_service_latency_ms": 0.0,
+                "p95_end_to_end_latency_ms": 0.0,
+                "p99_end_to_end_latency_ms": 0.0,
+                "max_end_to_end_latency_ms": 0.0,
                 "avg_history_len": 0.0,
                 "avg_request_bytes": 0.0,
                 "avg_response_bytes": 0.0,
-                "npu_used_mb_min": None,
-                "npu_used_mb_avg": None,
-                "npu_used_mb_max": None,
-                "npu_total_mb": None,
-                "npu_used_gb_min": None,
                 "npu_used_gb_avg": None,
-                "npu_used_gb_max": None,
                 "npu_total_gb": None,
             }
 
-        latencies = [item.latency_ms for item in self.request_metrics]
+        queue_waits = [item.queue_wait_ms for item in self.request_metrics]
+        service_latencies = [item.service_latency_ms for item in self.request_metrics]
+        end_to_end_latencies = [
+            item.end_to_end_latency_ms for item in self.request_metrics
+        ]
         histories = [item.history_len for item in self.request_metrics]
         transport_successes = [item.transport_success for item in self.request_metrics]
         http_successes = [item.http_success for item in self.request_metrics]
@@ -855,7 +872,6 @@ class ReportWriter:
         npu_used_mb_avg = (
             round(statistics.mean(npu_used_values), 2) if npu_used_values else None
         )
-        npu_used_mb_max = max(npu_used_values) if npu_used_values else None
         npu_total_mb = max(npu_total_values) if npu_total_values else None
 
         return {
@@ -875,22 +891,20 @@ class ReportWriter:
             "npu_sample_count": len(self.npu_metrics),
             "npu_valid_sample_count": len(npu_used_values),
             "throughput_qps": round(len(self.request_metrics) / wall_time_sec, 2),
-            "avg_latency_ms": round(statistics.mean(latencies), 2),
-            "p50_latency_ms": round(percentile(latencies, 50), 2),
-            "p90_latency_ms": round(percentile(latencies, 90), 2),
-            "p95_latency_ms": round(percentile(latencies, 95), 2),
-            "p99_latency_ms": round(percentile(latencies, 99), 2),
-            "max_latency_ms": round(max(latencies), 2),
+            "avg_queue_wait_ms": round(statistics.mean(queue_waits), 2),
+            "avg_service_latency_ms": round(statistics.mean(service_latencies), 2),
+            "avg_end_to_end_latency_ms": round(
+                statistics.mean(end_to_end_latencies), 2
+            ),
+            "p95_service_latency_ms": round(percentile(service_latencies, 95), 2),
+            "p99_service_latency_ms": round(percentile(service_latencies, 99), 2),
+            "p95_end_to_end_latency_ms": round(percentile(end_to_end_latencies, 95), 2),
+            "p99_end_to_end_latency_ms": round(percentile(end_to_end_latencies, 99), 2),
+            "max_end_to_end_latency_ms": round(max(end_to_end_latencies), 2),
             "avg_history_len": round(statistics.mean(histories), 2),
             "avg_request_bytes": round(statistics.mean(request_sizes), 2),
             "avg_response_bytes": round(statistics.mean(response_sizes), 2),
-            "npu_used_mb_min": npu_used_mb_min,
-            "npu_used_mb_avg": npu_used_mb_avg,
-            "npu_used_mb_max": npu_used_mb_max,
-            "npu_total_mb": npu_total_mb,
-            "npu_used_gb_min": mb_to_gb(npu_used_mb_min),
             "npu_used_gb_avg": mb_to_gb(npu_used_mb_avg),
-            "npu_used_gb_max": mb_to_gb(npu_used_mb_max),
             "npu_total_gb": mb_to_gb(npu_total_mb),
         }
 
@@ -905,7 +919,9 @@ class ReportWriter:
 
         scenario_rows: List[Dict[str, Any]] = []
         for scenario_name, items in grouped.items():
-            latencies = [item.latency_ms for item in items]
+            queue_waits = [item.queue_wait_ms for item in items]
+            service_latencies = [item.service_latency_ms for item in items]
+            end_to_end_latencies = [item.end_to_end_latency_ms for item in items]
             final_successes = [item.final_success for item in items]
             histories = [item.history_len for item in items]
 
@@ -921,9 +937,19 @@ class ReportWriter:
                         sum(final_successes) / len(final_successes) * 100, 2
                     ),
                     "throughput_qps": round(len(items) / wall_time_sec, 2),
-                    "avg_latency_ms": round(statistics.mean(latencies), 2),
-                    "p95_latency_ms": round(percentile(latencies, 95), 2),
-                    "p99_latency_ms": round(percentile(latencies, 99), 2),
+                    "avg_queue_wait_ms": round(statistics.mean(queue_waits), 2),
+                    "avg_service_latency_ms": round(
+                        statistics.mean(service_latencies), 2
+                    ),
+                    "avg_end_to_end_latency_ms": round(
+                        statistics.mean(end_to_end_latencies), 2
+                    ),
+                    "p95_service_latency_ms": round(
+                        percentile(service_latencies, 95), 2
+                    ),
+                    "p99_service_latency_ms": round(
+                        percentile(service_latencies, 99), 2
+                    ),
                     "avg_history_len": round(statistics.mean(histories), 2),
                 }
             )
@@ -946,9 +972,11 @@ class ReportWriter:
                 "total_requests",
                 "success_rate_pct",
                 "throughput_qps",
-                "avg_latency_ms",
-                "p95_latency_ms",
-                "p99_latency_ms",
+                "avg_queue_wait_ms",
+                "avg_service_latency_ms",
+                "avg_end_to_end_latency_ms",
+                "p95_service_latency_ms",
+                "p99_service_latency_ms",
                 "avg_history_len",
             ]
             writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -968,22 +996,18 @@ class ReportWriter:
             ["npu_sample_count", summary["npu_sample_count"]],
             ["npu_valid_sample_count", summary["npu_valid_sample_count"]],
             ["throughput_qps", summary["throughput_qps"]],
-            ["avg_latency_ms", summary["avg_latency_ms"]],
-            ["p50_latency_ms", summary["p50_latency_ms"]],
-            ["p90_latency_ms", summary["p90_latency_ms"]],
-            ["p95_latency_ms", summary["p95_latency_ms"]],
-            ["p99_latency_ms", summary["p99_latency_ms"]],
-            ["max_latency_ms", summary["max_latency_ms"]],
+            ["avg_queue_wait_ms", summary["avg_queue_wait_ms"]],
+            ["avg_service_latency_ms", summary["avg_service_latency_ms"]],
+            ["avg_end_to_end_latency_ms", summary["avg_end_to_end_latency_ms"]],
+            ["p95_service_latency_ms", summary["p95_service_latency_ms"]],
+            ["p99_service_latency_ms", summary["p99_service_latency_ms"]],
+            ["p95_end_to_end_latency_ms", summary["p95_end_to_end_latency_ms"]],
+            ["p99_end_to_end_latency_ms", summary["p99_end_to_end_latency_ms"]],
+            ["max_end_to_end_latency_ms", summary["max_end_to_end_latency_ms"]],
             ["avg_history_len", summary["avg_history_len"]],
             ["avg_request_bytes", summary["avg_request_bytes"]],
             ["avg_response_bytes", summary["avg_response_bytes"]],
-            ["npu_used_mb_min", summary["npu_used_mb_min"]],
-            ["npu_used_mb_avg", summary["npu_used_mb_avg"]],
-            ["npu_used_mb_max", summary["npu_used_mb_max"]],
-            ["npu_total_mb", summary["npu_total_mb"]],
-            ["npu_used_gb_min", summary["npu_used_gb_min"]],
             ["npu_used_gb_avg", summary["npu_used_gb_avg"]],
-            ["npu_used_gb_max", summary["npu_used_gb_max"]],
             ["npu_total_gb", summary["npu_total_gb"]],
         ]
 
@@ -1000,9 +1024,11 @@ class ReportWriter:
                         item["total_requests"],
                         item["success_rate_pct"],
                         item["throughput_qps"],
-                        item["avg_latency_ms"],
-                        item["p95_latency_ms"],
-                        item["p99_latency_ms"],
+                        item["avg_queue_wait_ms"],
+                        item["avg_service_latency_ms"],
+                        item["avg_end_to_end_latency_ms"],
+                        item["p95_service_latency_ms"],
+                        item["p99_service_latency_ms"],
                         item["avg_history_len"],
                     ]
                 )
@@ -1012,9 +1038,11 @@ class ReportWriter:
                     "total",
                     "success_rate_pct",
                     "qps",
-                    "avg_latency_ms",
-                    "p95_latency_ms",
-                    "p99_latency_ms",
+                    "avg_queue_wait_ms",
+                    "avg_service_latency_ms",
+                    "avg_e2e_latency_ms",
+                    "p95_service_latency_ms",
+                    "p99_service_latency_ms",
                     "avg_history_len",
                 ],
                 rows,
@@ -1046,25 +1074,21 @@ def print_metric_explanations() -> None:
             "成功解析出显存占用的采样次数；为 0 时，npu_used_mb_* 通常会是 None",
         ],
         ["throughput_qps", "每秒处理请求数，反映整体吞吐能力"],
-        ["avg_latency_ms", "平均响应延迟，单位毫秒"],
-        ["p50_latency_ms", "50 分位延迟，中位数"],
-        ["p90_latency_ms", "90 分位延迟，90% 请求不超过该值"],
-        ["p95_latency_ms", "95 分位延迟，常用核心性能指标"],
-        ["p99_latency_ms", "99 分位延迟，反映长尾请求性能"],
-        ["max_latency_ms", "最大延迟，反映最慢请求"],
+        ["avg_queue_wait_ms", "平均排队等待时间；主要反映并发槽位不足带来的等待"],
+        ["avg_service_latency_ms", "平均实际请求耗时；从真正发出请求到收到响应结束"],
+        [
+            "avg_end_to_end_latency_ms",
+            "平均端到端耗时；等于排队等待时间加实际请求耗时",
+        ],
+        ["p95_service_latency_ms", "实际请求耗时的 P95，常用核心性能指标"],
+        ["p99_service_latency_ms", "实际请求耗时的 P99，反映长尾请求性能"],
+        ["p95_end_to_end_latency_ms", "端到端耗时的 P95，包含排队等待"],
+        ["p99_end_to_end_latency_ms", "端到端耗时的 P99，包含排队等待"],
+        ["max_end_to_end_latency_ms", "最大端到端耗时，反映最慢请求"],
         ["avg_history_len", "平均历史行为长度，反映请求负载规模"],
         ["avg_request_bytes", "平均请求体大小，单位字节"],
         ["avg_response_bytes", "平均响应体大小，单位字节"],
-        ["npu_used_mb_min", "压测期间 NPU 显存最小占用，单位 MB"],
-        ["npu_used_mb_avg", "压测期间 NPU 显存平均占用，单位 MB"],
-        ["npu_used_mb_max", "压测期间 NPU 显存最大占用，单位 MB"],
-        ["npu_used_gb_min", "压测期间 NPU 显存最小占用，单位 GB"],
         ["npu_used_gb_avg", "压测期间 NPU 显存平均占用，单位 GB"],
-        ["npu_used_gb_max", "压测期间 NPU 显存最大占用，单位 GB"],
-        [
-            "npu_total_mb",
-            "NPU 总显存容量，单位 MB；如果采样命令不可用或解析失败会显示 None",
-        ],
         ["npu_total_gb", "NPU 总显存容量，单位 GB"],
         [
             "npu-device-id",
