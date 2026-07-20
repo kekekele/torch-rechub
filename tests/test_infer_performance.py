@@ -27,6 +27,12 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def mb_to_gb(value_mb: Optional[float]) -> Optional[float]:
+    if value_mb is None:
+        return None
+    return round(value_mb / 1024.0, 2)
+
+
 def percentile(values: List[float], p: float) -> float:
     if not values:
         return 0.0
@@ -242,6 +248,28 @@ class AscendNpuSampler:
     def _command_exists(self) -> bool:
         return shutil.which(self._command_name()) is not None
 
+    def _should_append_device_args(self) -> bool:
+        """
+        默认命令是 npu-smi info 时，自动补上 -t usages -i <device_id>。
+
+        这样可以直接让 npu-smi 只返回目标卡信息，
+        避免多卡输出时再靠文本匹配导致误判。
+        如果用户已经手动传了 -i 或 -t，则尊重用户自定义命令。
+        """
+        stripped_command = self.command.strip()
+        if not stripped_command.lower().startswith("npu-smi info"):
+            return False
+        if re.search(r"(^|\s)-i(\s|$)", stripped_command):
+            return False
+        if re.search(r"(^|\s)-t(\s|$)", stripped_command):
+            return False
+        return True
+
+    def _build_sample_command(self) -> str:
+        if self._should_append_device_args():
+            return f"{self.command} -t usages -i {self.device_id}"
+        return self.command
+
     def _extract_memory_pair(self, text: str) -> Tuple[Optional[int], Optional[int]]:
         """
         提取显存占用。
@@ -271,40 +299,16 @@ class AscendNpuSampler:
         self, raw: str
     ) -> Tuple[Optional[int], Optional[int], Optional[int]]:
         """
-        尽量从命令输出中提取显存和利用率。
+        从单卡采样命令输出中提取显存和利用率。
 
-        不同 npu-smi 版本输出可能略有差异，
-        如果采样结果不准确，优先修改这里。
+        这里不再做按 device_id 的文本筛选，也不再对全量多卡输出做兜底。
+        当前假设调用命令已经通过 -i <device_id> 限定到了单张卡。
         """
-        used_mb = None
-        total_mb = None
+        used_mb, total_mb = self._extract_memory_pair(raw)
         utilization_pct = None
-
-        for line in raw.splitlines():
-            if self.device_id not in line and f" {self.device_id} " not in line:
-                continue
-
-            used_mb, total_mb = self._extract_memory_pair(line)
-
-            util_match = re.search(r"(\d+)\s*%", line)
-            if util_match:
-                utilization_pct = int(util_match.group(1))
-
-            if (
-                used_mb is not None
-                and total_mb is not None
-                and utilization_pct is not None
-            ):
-                return used_mb, total_mb, utilization_pct
-
-        if used_mb is None or total_mb is None:
-            used_mb, total_mb = self._extract_memory_pair(raw)
-
-        if utilization_pct is None:
-            util_candidates = re.findall(r"(\d+)\s*%", raw)
-            if util_candidates:
-                utilization_pct = int(util_candidates[0])
-
+        util_candidates = re.findall(r"(\d+)\s*%", raw)
+        if util_candidates:
+            utilization_pct = int(util_candidates[0])
         return used_mb, total_mb, utilization_pct
 
     async def run(self) -> None:
@@ -327,10 +331,11 @@ class AscendNpuSampler:
         while not self._stop:
             ts_ms = now_ms()
             raw = ""
+            sample_command = self._build_sample_command()
 
             try:
                 proc = await asyncio.create_subprocess_shell(
-                    self.command,
+                    sample_command,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -434,7 +439,7 @@ class LoadTester:
         当前兼容规则：
         1. 有 success 字段时，以 success 为准
         2. 有 code 字段时，0/OK/SUCCESS 视为成功
-        3. 都没有时，退化为 HTTP 2xx 视为业务成功
+        3. 都没有时，视为业务失败，避免把仅有 HTTP 200 的响应误判为成功
         """
         transport_success = 1
         http_success = 1 if 200 <= status < 300 else 0
@@ -464,9 +469,9 @@ class LoadTester:
                     1 if str(code_value).upper() in {"0", "OK", "SUCCESS"} else 0
                 )
             else:
-                business_success = http_success
+                business_success = 0
         else:
-            business_success = http_success
+            business_success = 0
 
         return (
             transport_success,
@@ -729,6 +734,10 @@ class ReportWriter:
                 "npu_used_mb_avg": None,
                 "npu_used_mb_max": None,
                 "npu_total_mb": None,
+                "npu_used_gb_min": None,
+                "npu_used_gb_avg": None,
+                "npu_used_gb_max": None,
+                "npu_total_gb": None,
             }
 
         latencies = [item.latency_ms for item in self.request_metrics]
@@ -750,6 +759,13 @@ class ReportWriter:
         npu_total_values = [
             item.total_mb for item in self.npu_metrics if item.total_mb is not None
         ]
+
+        npu_used_mb_min = min(npu_used_values) if npu_used_values else None
+        npu_used_mb_avg = (
+            round(statistics.mean(npu_used_values), 2) if npu_used_values else None
+        )
+        npu_used_mb_max = max(npu_used_values) if npu_used_values else None
+        npu_total_mb = max(npu_total_values) if npu_total_values else None
 
         return {
             "total_requests": len(self.request_metrics),
@@ -777,12 +793,14 @@ class ReportWriter:
             "avg_history_len": round(statistics.mean(histories), 2),
             "avg_request_bytes": round(statistics.mean(request_sizes), 2),
             "avg_response_bytes": round(statistics.mean(response_sizes), 2),
-            "npu_used_mb_min": min(npu_used_values) if npu_used_values else None,
-            "npu_used_mb_avg": (
-                round(statistics.mean(npu_used_values), 2) if npu_used_values else None
-            ),
-            "npu_used_mb_max": max(npu_used_values) if npu_used_values else None,
-            "npu_total_mb": max(npu_total_values) if npu_total_values else None,
+            "npu_used_mb_min": npu_used_mb_min,
+            "npu_used_mb_avg": npu_used_mb_avg,
+            "npu_used_mb_max": npu_used_mb_max,
+            "npu_total_mb": npu_total_mb,
+            "npu_used_gb_min": mb_to_gb(npu_used_mb_min),
+            "npu_used_gb_avg": mb_to_gb(npu_used_mb_avg),
+            "npu_used_gb_max": mb_to_gb(npu_used_mb_max),
+            "npu_total_gb": mb_to_gb(npu_total_mb),
         }
 
     def summarize_by_scenario(self) -> List[Dict[str, Any]]:
@@ -872,6 +890,10 @@ class ReportWriter:
             ["npu_used_mb_avg", summary["npu_used_mb_avg"]],
             ["npu_used_mb_max", summary["npu_used_mb_max"]],
             ["npu_total_mb", summary["npu_total_mb"]],
+            ["npu_used_gb_min", summary["npu_used_gb_min"]],
+            ["npu_used_gb_avg", summary["npu_used_gb_avg"]],
+            ["npu_used_gb_max", summary["npu_used_gb_max"]],
+            ["npu_total_gb", summary["npu_total_gb"]],
         ]
 
         print("\n=== Overall Summary ===")
@@ -921,9 +943,12 @@ def print_metric_explanations() -> None:
         ["http_success_rate_pct", "HTTP 状态码为 2xx 的请求占比"],
         [
             "business_success_rate_pct",
-            "按响应体 success/code 字段判断为业务成功的请求占比",
+            "按响应体 success/code 字段明确判断为业务成功的请求占比；仅 HTTP 200 不算成功",
         ],
-        ["success_rate_pct", "最终成功率，要求传输成功、HTTP 成功、业务成功同时成立"],
+        [
+            "success_rate_pct",
+            "最终成功率，只有成功拿到业务成功返回才算成功；仅 HTTP 200 不算成功",
+        ],
         ["npu_sample_count", "NPU 采样总次数，用于判断采样流程是否真正执行"],
         [
             "npu_valid_sample_count",
@@ -942,9 +967,17 @@ def print_metric_explanations() -> None:
         ["npu_used_mb_min", "压测期间 NPU 显存最小占用，单位 MB"],
         ["npu_used_mb_avg", "压测期间 NPU 显存平均占用，单位 MB"],
         ["npu_used_mb_max", "压测期间 NPU 显存最大占用，单位 MB"],
+        ["npu_used_gb_min", "压测期间 NPU 显存最小占用，单位 GB"],
+        ["npu_used_gb_avg", "压测期间 NPU 显存平均占用，单位 GB"],
+        ["npu_used_gb_max", "压测期间 NPU 显存最大占用，单位 GB"],
         [
             "npu_total_mb",
             "NPU 总显存容量，单位 MB；如果采样命令不可用或解析失败会显示 None",
+        ],
+        ["npu_total_gb", "NPU 总显存容量，单位 GB"],
+        [
+            "npu-device-id",
+            "指定采集哪张 NPU 卡；默认会拼接为 npu-smi info -t usages -i <device_id>",
         ],
         ["response_file", "每次请求对应的完整响应落盘文件，便于排查"],
     ]
@@ -1076,7 +1109,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--npu-sample-interval-sec", type=float, default=1.0, help="NPU 采样周期"
     )
-    parser.add_argument("--npu-command", default="npu-smi info", help="NPU 采样命令")
+    parser.add_argument(
+        "--npu-command",
+        default="npu-smi info",
+        help="NPU 采样命令；默认自动补成 npu-smi info -t usages -i <device_id>",
+    )
 
     return parser
 
