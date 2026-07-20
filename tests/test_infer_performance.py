@@ -233,6 +233,35 @@ class RequestGenerator:
         files: List[Path] = []
         scenarios = self.scenario_pool()
 
+        if self.total_requests < 3:
+            effective_minlen = min(self.minlen, self.maxlen)
+            effective_maxlen = max(self.minlen, self.maxlen)
+            near_max_start = max(effective_minlen, effective_maxlen - 1)
+            near_max_scenarios = [
+                {
+                    "scenario_name": "heavy",
+                    "history_min": near_max_start,
+                    "history_max": near_max_start,
+                },
+                {
+                    "scenario_name": "heavy",
+                    "history_min": effective_maxlen,
+                    "history_max": effective_maxlen,
+                },
+            ][: self.total_requests]
+
+            for idx, scenario in enumerate(near_max_scenarios):
+                payload = self.build_request(scenario)
+                file_path = (
+                    self.output_dir
+                    / f"request_{idx:05d}_{scenario['scenario_name']}.json"
+                )
+                with file_path.open("w", encoding="utf-8") as file:
+                    json.dump(payload, file, ensure_ascii=False, indent=2)
+                files.append(file_path)
+
+            return files
+
         for idx in range(self.total_requests):
             scenario = scenarios[idx % len(scenarios)]
             payload = self.build_request(scenario)
