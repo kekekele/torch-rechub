@@ -278,7 +278,21 @@ class AscendNpuSampler:
         1. 27162 / 32768 MB
         2. 27162/32768MB
         3. 27162 / 32768（部分 npu-smi 版本不带 MB）
+        4. HBM Capacity(MB) + HBM Usage Rate(%)
         """
+        hbm_capacity_match = re.search(
+            r"HBM\s+Capacity\(MB\)\s*:\s*(\d+)", text, re.IGNORECASE
+        )
+        hbm_usage_match = re.search(
+            r"HBM\s+Usage\s+Rate\(%\)\s*:\s*(\d+)", text, re.IGNORECASE
+        )
+        if hbm_capacity_match and hbm_usage_match:
+            total_mb = int(hbm_capacity_match.group(1))
+            usage_rate = int(hbm_usage_match.group(1))
+            used_mb = round(total_mb * usage_rate / 100.0)
+            if 0 <= used_mb <= total_mb and total_mb >= 1024:
+                return used_mb, total_mb
+
         patterns = [
             r"(\d+)\s*/\s*(\d+)\s*MB",
             r"(\d+)\s*/\s*(\d+)\s*MiB",
@@ -306,9 +320,17 @@ class AscendNpuSampler:
         """
         used_mb, total_mb = self._extract_memory_pair(raw)
         utilization_pct = None
-        util_candidates = re.findall(r"(\d+)\s*%", raw)
-        if util_candidates:
-            utilization_pct = int(util_candidates[0])
+
+        hbm_usage_match = re.search(
+            r"HBM\s+Usage\s+Rate\(%\)\s*:\s*(\d+)", raw, re.IGNORECASE
+        )
+        if hbm_usage_match:
+            utilization_pct = int(hbm_usage_match.group(1))
+        else:
+            util_candidates = re.findall(r"(\d+)\s*%", raw)
+            if util_candidates:
+                utilization_pct = int(util_candidates[0])
+
         return used_mb, total_mb, utilization_pct
 
     async def run(self) -> None:
@@ -439,7 +461,7 @@ class LoadTester:
         当前兼容规则：
         1. 有 success 字段时，以 success 为准
         2. 有 code 字段时，0/OK/SUCCESS 视为成功
-        3. 都没有时，视为业务失败，避免把仅有 HTTP 200 的响应误判为成功
+        3. 没有显式 success/code 时，如果 HTTP 成功且返回非空结构化对象，则按业务成功处理
         """
         transport_success = 1
         http_success = 1 if 200 <= status < 300 else 0
@@ -469,7 +491,13 @@ class LoadTester:
                     1 if str(code_value).upper() in {"0", "OK", "SUCCESS"} else 0
                 )
             else:
-                business_success = 0
+                business_success = 1 if http_success and len(parsed_body) > 0 else 0
+                if business_success and not response_message:
+                    response_message = "implicit_success_nonempty_dict"
+        elif isinstance(parsed_body, list):
+            business_success = 1 if http_success and len(parsed_body) > 0 else 0
+            if business_success:
+                response_message = "implicit_success_nonempty_list"
         else:
             business_success = 0
 
