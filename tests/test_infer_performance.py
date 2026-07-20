@@ -72,9 +72,15 @@ class RequestMetric:
     end_ts_ms: int
     latency_ms: float
     status: int
-    success: int
+    transport_success: int
+    http_success: int
+    business_success: int
+    final_success: int
     request_bytes: int
     response_bytes: int
+    response_code: str
+    response_message: str
+    response_file: str
     error: str
 
 
@@ -326,12 +332,14 @@ class LoadTester:
         concurrency: int,
         timeout_sec: float,
         requests_dir: Path,
+        responses_dir: Path,
     ) -> None:
         self.endpoint = endpoint
         self.headers = headers
         self.concurrency = concurrency
         self.timeout_sec = timeout_sec
         self.requests_dir = requests_dir
+        self.responses_dir = responses_dir
         self.metrics: List[RequestMetric] = []
 
     def load_requests(self) -> List[Tuple[int, str, Dict[str, Any]]]:
@@ -354,6 +362,85 @@ class LoadTester:
             return "heavy"
         return "unknown"
 
+    def parse_business_result(
+        self,
+        status: int,
+        response_text: str,
+    ) -> Tuple[int, int, int, str, str, Any]:
+        """
+        解析业务成功状态。
+
+        成功分三层：
+        1. transport_success: 成功拿到响应，没有连接或超时异常
+        2. http_success: HTTP 状态码在 2xx
+        3. business_success: 响应体中的业务字段判定成功
+
+        当前兼容规则：
+        1. 有 success 字段时，以 success 为准
+        2. 有 code 字段时，0/OK/SUCCESS 视为成功
+        3. 都没有时，退化为 HTTP 2xx 视为业务成功
+        """
+        transport_success = 1
+        http_success = 1 if 200 <= status < 300 else 0
+        business_success = 0
+        response_code = ""
+        response_message = ""
+
+        try:
+            parsed_body: Any = json.loads(response_text)
+        except json.JSONDecodeError:
+            parsed_body = response_text
+
+        if isinstance(parsed_body, dict):
+            if "success" in parsed_body:
+                business_success = 1 if bool(parsed_body.get("success")) else 0
+                response_code = str(parsed_body.get("code", ""))
+                response_message = str(parsed_body.get("message", parsed_body.get("msg", "")))
+            elif "code" in parsed_body:
+                code_value = parsed_body.get("code")
+                response_code = str(code_value)
+                response_message = str(parsed_body.get("message", parsed_body.get("msg", "")))
+                business_success = 1 if str(code_value).upper() in {"0", "OK", "SUCCESS"} else 0
+            else:
+                business_success = http_success
+        else:
+            business_success = http_success
+
+        return (
+            transport_success,
+            http_success,
+            business_success,
+            response_code,
+            response_message,
+            parsed_body,
+        )
+
+    def save_response(
+        self,
+        request_index: int,
+        scenario_name: str,
+        payload: Dict[str, Any],
+        status: int,
+        parsed_body: Any,
+        error: str,
+    ) -> str:
+        """
+        保存完整响应，便于后续排查异常样本和核对业务结果。
+        """
+        ensure_dir(self.responses_dir)
+        response_path = self.responses_dir / f"response_{request_index:05d}_{scenario_name}.json"
+        record = {
+            "request_index": request_index,
+            "scenario_name": scenario_name,
+            "status": status,
+            "error": error,
+            "request": payload,
+            "response": parsed_body,
+        }
+        with response_path.open("w", encoding="utf-8") as file:
+            json.dump(record, file, ensure_ascii=False, indent=2)
+        return str(response_path)
+
     async def send_one(
         self,
         session: aiohttp.ClientSession,
@@ -375,9 +462,15 @@ class LoadTester:
         uid = str(payload.get("uid", ""))
         history_len = len(payload.get("history", []))
         status = 0
-        success = 0
+        transport_success = 0
+        http_success = 0
+        business_success = 0
+        final_success = 0
         response_bytes = 0
+        response_code = ""
+        response_message = ""
         error = ""
+        parsed_body: Any = None
 
         start_ts = now_ms()
 
@@ -389,13 +482,30 @@ class LoadTester:
                     headers=self.headers,
                 ) as response:
                     content = await response.read()
+                    response_text = content.decode("utf-8", errors="ignore")
                     status = response.status
-                    success = 1 if 200 <= response.status < 300 else 0
                     response_bytes = len(content)
+                    (
+                        transport_success,
+                        http_success,
+                        business_success,
+                        response_code,
+                        response_message,
+                        parsed_body,
+                    ) = self.parse_business_result(status, response_text)
+                    final_success = 1 if transport_success and http_success and business_success else 0
             except Exception as exc:
                 error = str(exc)
 
         end_ts = now_ms()
+        response_file = self.save_response(
+            request_index=request_index,
+            scenario_name=scenario_name,
+            payload=payload,
+            status=status,
+            parsed_body=parsed_body,
+            error=error,
+        )
 
         self.metrics.append(
             RequestMetric(
@@ -407,9 +517,15 @@ class LoadTester:
                 end_ts_ms=end_ts,
                 latency_ms=float(end_ts - start_ts),
                 status=status,
-                success=success,
+                transport_success=transport_success,
+                http_success=http_success,
+                business_success=business_success,
+                final_success=final_success,
                 request_bytes=len(request_body),
                 response_bytes=response_bytes,
+                response_code=response_code,
+                response_message=response_message[:200],
+                response_file=response_file,
                 error=error,
             )
         )
@@ -477,9 +593,15 @@ class ReportWriter:
                 "end_ts_ms",
                 "latency_ms",
                 "status",
-                "success",
+                "transport_success",
+                "http_success",
+                "business_success",
+                "final_success",
                 "request_bytes",
                 "response_bytes",
+                "response_code",
+                "response_message",
+                "response_file",
                 "error",
             ]
             writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -516,6 +638,9 @@ class ReportWriter:
         if not self.request_metrics:
             return {
                 "total_requests": 0,
+                "transport_success_rate_pct": 0.0,
+                "http_success_rate_pct": 0.0,
+                "business_success_rate_pct": 0.0,
                 "success_rate_pct": 0.0,
                 "throughput_qps": 0.0,
                 "avg_latency_ms": 0.0,
@@ -535,7 +660,10 @@ class ReportWriter:
 
         latencies = [item.latency_ms for item in self.request_metrics]
         histories = [item.history_len for item in self.request_metrics]
-        successes = [item.success for item in self.request_metrics]
+        transport_successes = [item.transport_success for item in self.request_metrics]
+        http_successes = [item.http_success for item in self.request_metrics]
+        business_successes = [item.business_success for item in self.request_metrics]
+        final_successes = [item.final_success for item in self.request_metrics]
         request_sizes = [item.request_bytes for item in self.request_metrics]
         response_sizes = [item.response_bytes for item in self.request_metrics]
 
@@ -548,7 +676,10 @@ class ReportWriter:
 
         return {
             "total_requests": len(self.request_metrics),
-            "success_rate_pct": round(sum(successes) / len(successes) * 100, 2),
+            "transport_success_rate_pct": round(sum(transport_successes) / len(transport_successes) * 100, 2),
+            "http_success_rate_pct": round(sum(http_successes) / len(http_successes) * 100, 2),
+            "business_success_rate_pct": round(sum(business_successes) / len(business_successes) * 100, 2),
+            "success_rate_pct": round(sum(final_successes) / len(final_successes) * 100, 2),
             "throughput_qps": round(len(self.request_metrics) / wall_time_sec, 2),
             "avg_latency_ms": round(statistics.mean(latencies), 2),
             "p50_latency_ms": round(percentile(latencies, 50), 2),
@@ -577,7 +708,7 @@ class ReportWriter:
         scenario_rows: List[Dict[str, Any]] = []
         for scenario_name, items in grouped.items():
             latencies = [item.latency_ms for item in items]
-            successes = [item.success for item in items]
+            final_successes = [item.final_success for item in items]
             histories = [item.history_len for item in items]
 
             start_ts = min(item.start_ts_ms for item in items)
@@ -588,7 +719,7 @@ class ReportWriter:
                 {
                     "scenario_name": scenario_name,
                     "total_requests": len(items),
-                    "success_rate_pct": round(sum(successes) / len(successes) * 100, 2),
+                    "success_rate_pct": round(sum(final_successes) / len(final_successes) * 100, 2),
                     "throughput_qps": round(len(items) / wall_time_sec, 2),
                     "avg_latency_ms": round(statistics.mean(latencies), 2),
                     "p95_latency_ms": round(percentile(latencies, 95), 2),
@@ -628,6 +759,9 @@ class ReportWriter:
     def print_summary(self, summary: Dict[str, Any], scenario_rows: List[Dict[str, Any]]) -> None:
         total_rows = [
             ["total_requests", summary["total_requests"]],
+            ["transport_success_rate_pct", summary["transport_success_rate_pct"]],
+            ["http_success_rate_pct", summary["http_success_rate_pct"]],
+            ["business_success_rate_pct", summary["business_success_rate_pct"]],
             ["success_rate_pct", summary["success_rate_pct"]],
             ["throughput_qps", summary["throughput_qps"]],
             ["avg_latency_ms", summary["avg_latency_ms"]],
@@ -679,6 +813,36 @@ class ReportWriter:
             )
 
 
+def print_metric_explanations() -> None:
+    """
+    输出指标口径说明，避免不同人对统计结果的理解不一致。
+    """
+    rows = [
+        ["total_requests", "本次压测总请求数"],
+        ["transport_success_rate_pct", "成功拿到响应的请求占比，不含连接失败和超时异常"],
+        ["http_success_rate_pct", "HTTP 状态码为 2xx 的请求占比"],
+        ["business_success_rate_pct", "按响应体 success/code 字段判断为业务成功的请求占比"],
+        ["success_rate_pct", "最终成功率，要求传输成功、HTTP 成功、业务成功同时成立"],
+        ["throughput_qps", "每秒处理请求数，反映整体吞吐能力"],
+        ["avg_latency_ms", "平均响应延迟，单位毫秒"],
+        ["p50_latency_ms", "50 分位延迟，中位数"],
+        ["p90_latency_ms", "90 分位延迟，90% 请求不超过该值"],
+        ["p95_latency_ms", "95 分位延迟，常用核心性能指标"],
+        ["p99_latency_ms", "99 分位延迟，反映长尾请求性能"],
+        ["max_latency_ms", "最大延迟，反映最慢请求"],
+        ["avg_history_len", "平均历史行为长度，反映请求负载规模"],
+        ["avg_request_bytes", "平均请求体大小，单位字节"],
+        ["avg_response_bytes", "平均响应体大小，单位字节"],
+        ["npu_used_mb_min", "压测期间 NPU 显存最小占用，单位 MB"],
+        ["npu_used_mb_avg", "压测期间 NPU 显存平均占用，单位 MB"],
+        ["npu_used_mb_max", "压测期间 NPU 显存最大占用，单位 MB"],
+        ["npu_total_mb", "NPU 总显存容量，单位 MB"],
+        ["response_file", "每次请求对应的完整响应落盘文件，便于排查"],
+    ]
+    print("\n=== Metric Explanations ===")
+    print_table(["metric", "meaning"], rows)
+
+
 # =========================
 # 主流程编排区
 # =========================
@@ -693,10 +857,12 @@ async def main_async(args: argparse.Namespace) -> None:
     """
     base_dir = Path(args.output_dir).resolve()
     requests_dir = base_dir / "requests"
+    responses_dir = base_dir / "responses"
     reports_dir = base_dir / "reports"
 
     ensure_dir(base_dir)
     ensure_dir(requests_dir)
+    ensure_dir(responses_dir)
     ensure_dir(reports_dir)
 
     metadata_template = {}
@@ -731,6 +897,7 @@ async def main_async(args: argparse.Namespace) -> None:
         concurrency=args.concurrency,
         timeout_sec=args.timeout_sec,
         requests_dir=requests_dir,
+        responses_dir=responses_dir,
     )
 
     sampler_task = asyncio.create_task(sampler.run()) if not args.disable_npu_sampler else None
@@ -755,9 +922,11 @@ async def main_async(args: argparse.Namespace) -> None:
     reporter.write_summary_csv(summary)
     reporter.write_scenario_summary_csv(scenario_rows)
     reporter.print_summary(summary, scenario_rows)
+    print_metric_explanations()
 
     print("\n=== Output Files ===")
     print(f"request_metrics_csv: {reports_dir / 'request_metrics.csv'}")
+    print(f"responses_dir:         {responses_dir}")
     print(f"npu_metrics_csv:     {reports_dir / 'npu_metrics.csv'}")
     print(f"summary_csv:         {reports_dir / 'summary.csv'}")
     print(f"scenario_summary:    {reports_dir / 'scenario_summary.csv'}")
