@@ -1,0 +1,802 @@
+import argparse
+import asyncio
+import csv
+import json
+import math
+import random
+import re
+import statistics
+import time
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import aiohttp
+
+
+# =========================
+# 配置区：默认参数与目录工具
+# =========================
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def percentile(values: List[float], p: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    ordered = sorted(values)
+    rank = (len(ordered) - 1) * p / 100.0
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return ordered[int(rank)]
+    low_value = ordered[lower]
+    high_value = ordered[upper]
+    return low_value + (high_value - low_value) * (rank - lower)
+
+
+def print_table(headers: List[str], rows: List[List[Any]]) -> None:
+    widths = [len(str(h)) for h in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(str(cell)))
+
+    def render_row(row: List[Any]) -> str:
+        return " | ".join(str(cell).ljust(widths[idx]) for idx, cell in enumerate(row))
+
+    split_line = "-+-".join("-" * width for width in widths)
+    print(render_row(headers))
+    print(split_line)
+    for row in rows:
+        print(render_row(row))
+
+
+# =========================
+# 数据结构区：压测结果对象
+# =========================
+
+@dataclass
+class RequestMetric:
+    request_index: int
+    scenario_name: str
+    uid: str
+    history_len: int
+    start_ts_ms: int
+    end_ts_ms: int
+    latency_ms: float
+    status: int
+    success: int
+    request_bytes: int
+    response_bytes: int
+    error: str
+
+
+@dataclass
+class NpuMetric:
+    ts_ms: int
+    device_id: str
+    used_mb: Optional[int]
+    total_mb: Optional[int]
+    utilization_pct: Optional[int]
+    raw: str
+
+
+# =========================
+# 核心逻辑区 1：请求生成
+# =========================
+
+class RequestGenerator:
+    """
+    生成批量 request.json 请求文件。
+
+    设计目标：
+    1. 方便重复复用同一批请求做版本对比
+    2. 方便针对不同 history 长度分场景压测
+    3. 后续容易替换成真实样本回放
+    """
+
+    def __init__(
+        self,
+        output_dir: Path,
+        total_requests: int,
+        seed: int,
+        metadata_template: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.output_dir = output_dir
+        self.total_requests = total_requests
+        self.seed = seed
+        self.metadata_template = metadata_template or {}
+        random.seed(seed)
+
+    def scenario_pool(self) -> List[Dict[str, Any]]:
+        """
+        当前按照 history 长度定义 3 类场景。
+        如果后续要扩展更多请求变量，优先改这里。
+        """
+        return [
+            {"scenario_name": "light", "history_min": 5, "history_max": 10},
+            {"scenario_name": "medium", "history_min": 20, "history_max": 50},
+            {"scenario_name": "heavy", "history_min": 100, "history_max": 200},
+        ]
+
+    def build_history(self, history_len: int, base_timestamp: int) -> List[Dict[str, Any]]:
+        """
+        生成 history 行为序列。
+
+        约束：
+        1. action 只取 0 或 1
+        2. rating 只取 1 到 5
+        3. timestamp 递增，模拟真实行为时间线
+        """
+        history = []
+        timestamp = base_timestamp
+
+        for _ in range(history_len):
+            timestamp += random.randint(1, 30)
+            history.append(
+                {
+                    "iid": str(random.randint(100, 999999)),
+                    "timestamp": timestamp,
+                    "action": random.choice([0, 1]),
+                    "rating": random.randint(1, 5),
+                }
+            )
+        return history
+
+    def build_request(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        生成单条请求。
+
+        如果你的真实接口后续新增字段，优先改这个函数。
+        """
+        history_len = random.randint(scenario["history_min"], scenario["history_max"])
+        base_timestamp = 978300000 + random.randint(0, 50000)
+
+        return {
+            "uid": str(random.randint(1, 10000000)),
+            "history": self.build_history(history_len, base_timestamp),
+            "query_context": {
+                "action": random.choice([0, 1]),
+                "rating": random.randint(1, 5),
+            },
+            "_metadata": self.metadata_template,
+        }
+
+    def generate(self) -> List[Path]:
+        """
+        生成请求文件并保存到 requests 目录。
+
+        每条请求单独保存，便于：
+        1. 定位异常样本
+        2. 重放同一批请求
+        3. 多版本服务横向对比
+        """
+        ensure_dir(self.output_dir)
+        files: List[Path] = []
+        scenarios = self.scenario_pool()
+
+        for idx in range(self.total_requests):
+            scenario = scenarios[idx % len(scenarios)]
+            payload = self.build_request(scenario)
+            file_path = self.output_dir / f"request_{idx:05d}_{scenario['scenario_name']}.json"
+            with file_path.open("w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+            files.append(file_path)
+
+        return files
+
+
+# =========================
+# 核心逻辑区 2：Ascend NPU 采样
+# =========================
+
+class AscendNpuSampler:
+    """
+    周期采样 Ascend NPU 指标。
+
+    默认通过 npu-smi info 获取数据。
+    如果后续你们环境里有更稳定的采集方式，替换这里即可。
+    """
+
+    def __init__(
+        self,
+        device_id: str,
+        interval_sec: float,
+        enabled: bool = True,
+        command: Optional[str] = None,
+    ) -> None:
+        self.device_id = device_id
+        self.interval_sec = interval_sec
+        self.enabled = enabled
+        self.command = command or "npu-smi info"
+        self.records: List[NpuMetric] = []
+        self._stop = False
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def _parse_output(self, raw: str) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+        """
+        尽量从命令输出中提取显存和利用率。
+
+        不同 npu-smi 版本输出可能略有差异，
+        如果采样结果不准确，优先修改这里。
+        """
+        used_mb = None
+        total_mb = None
+        utilization_pct = None
+
+        for line in raw.splitlines():
+            if self.device_id not in line and f" {self.device_id} " not in line:
+                continue
+
+            mem_match = re.search(r"(\d+)\s*/\s*(\d+)\s*MB", line, re.IGNORECASE)
+            util_match = re.search(r"(\d+)\s*%", line)
+
+            if mem_match:
+                used_mb = int(mem_match.group(1))
+                total_mb = int(mem_match.group(2))
+            if util_match:
+                utilization_pct = int(util_match.group(1))
+
+        if used_mb is None or total_mb is None:
+            mem_candidates = re.findall(r"(\d+)\s*/\s*(\d+)\s*MB", raw, re.IGNORECASE)
+            if mem_candidates:
+                used_mb = int(mem_candidates[0][0])
+                total_mb = int(mem_candidates[0][1])
+
+        if utilization_pct is None:
+            util_candidates = re.findall(r"(\d+)\s*%", raw)
+            if util_candidates:
+                utilization_pct = int(util_candidates[0])
+
+        return used_mb, total_mb, utilization_pct
+
+    async def run(self) -> None:
+        if not self.enabled:
+            return
+
+        while not self._stop:
+            ts_ms = now_ms()
+            raw = ""
+
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    self.command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await proc.communicate()
+                raw = (stdout or b"").decode("utf-8", errors="ignore")
+                err = (stderr or b"").decode("utf-8", errors="ignore")
+                if err.strip():
+                    raw = raw + "\n" + err
+
+                used_mb, total_mb, utilization_pct = self._parse_output(raw)
+                self.records.append(
+                    NpuMetric(
+                        ts_ms=ts_ms,
+                        device_id=self.device_id,
+                        used_mb=used_mb,
+                        total_mb=total_mb,
+                        utilization_pct=utilization_pct,
+                        raw=raw.strip(),
+                    )
+                )
+            except Exception as exc:
+                self.records.append(
+                    NpuMetric(
+                        ts_ms=ts_ms,
+                        device_id=self.device_id,
+                        used_mb=None,
+                        total_mb=None,
+                        utilization_pct=None,
+                        raw=f"sampler_error: {exc}",
+                    )
+                )
+
+            await asyncio.sleep(self.interval_sec)
+
+
+# =========================
+# 核心逻辑区 3：并发压测执行
+# =========================
+
+class LoadTester:
+    """
+    并发发送请求并记录性能指标。
+
+    这是压测主路径：
+    1. 读取请求文件
+    2. 并发发送 HTTP 请求
+    3. 记录请求级别的结果
+    """
+
+    def __init__(
+        self,
+        endpoint: str,
+        headers: Dict[str, str],
+        concurrency: int,
+        timeout_sec: float,
+        requests_dir: Path,
+    ) -> None:
+        self.endpoint = endpoint
+        self.headers = headers
+        self.concurrency = concurrency
+        self.timeout_sec = timeout_sec
+        self.requests_dir = requests_dir
+        self.metrics: List[RequestMetric] = []
+
+    def load_requests(self) -> List[Tuple[int, str, Dict[str, Any]]]:
+        requests = []
+        files = sorted(self.requests_dir.glob("request_*.json"))
+
+        for idx, path in enumerate(files):
+            with path.open("r", encoding="utf-8") as file:
+                payload = json.load(file)
+            requests.append((idx, path.name, payload))
+
+        return requests
+
+    def detect_scenario(self, file_name: str) -> str:
+        if "light" in file_name:
+            return "light"
+        if "medium" in file_name:
+            return "medium"
+        if "heavy" in file_name:
+            return "heavy"
+        return "unknown"
+
+    async def send_one(
+        self,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        request_index: int,
+        payload: Dict[str, Any],
+        scenario_name: str,
+    ) -> None:
+        """
+        发送单条请求。
+
+        后续最常改的点一般在这里：
+        1. 请求头注入
+        2. trace_id 注入
+        3. 响应体校验
+        4. 错误码分类统计
+        """
+        request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        uid = str(payload.get("uid", ""))
+        history_len = len(payload.get("history", []))
+        status = 0
+        success = 0
+        response_bytes = 0
+        error = ""
+
+        start_ts = now_ms()
+
+        async with semaphore:
+            try:
+                async with session.post(
+                    self.endpoint,
+                    data=request_body,
+                    headers=self.headers,
+                ) as response:
+                    content = await response.read()
+                    status = response.status
+                    success = 1 if 200 <= response.status < 300 else 0
+                    response_bytes = len(content)
+            except Exception as exc:
+                error = str(exc)
+
+        end_ts = now_ms()
+
+        self.metrics.append(
+            RequestMetric(
+                request_index=request_index,
+                scenario_name=scenario_name,
+                uid=uid,
+                history_len=history_len,
+                start_ts_ms=start_ts,
+                end_ts_ms=end_ts,
+                latency_ms=float(end_ts - start_ts),
+                status=status,
+                success=success,
+                request_bytes=len(request_body),
+                response_bytes=response_bytes,
+                error=error,
+            )
+        )
+
+    async def run(self) -> List[RequestMetric]:
+        loaded_requests = self.load_requests()
+        timeout = aiohttp.ClientTimeout(total=self.timeout_sec)
+        connector = aiohttp.TCPConnector(limit=0, ssl=False)
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            tasks = []
+            for idx, file_name, payload in loaded_requests:
+                scenario_name = self.detect_scenario(file_name)
+                tasks.append(
+                    self.send_one(
+                        session=session,
+                        semaphore=semaphore,
+                        request_index=idx,
+                        payload=payload,
+                        scenario_name=scenario_name,
+                    )
+                )
+            await asyncio.gather(*tasks)
+
+        self.metrics.sort(key=lambda item: item.request_index)
+        return self.metrics
+
+
+# =========================
+# 核心逻辑区 4：结果统计与输出
+# =========================
+
+class ReportWriter:
+    """
+    输出压测结果。
+
+    输出内容：
+    1. request_metrics.csv：每条请求明细
+    2. npu_metrics.csv：NPU 采样明细
+    3. summary.csv：总体汇总
+    """
+
+    def __init__(
+        self,
+        output_dir: Path,
+        request_metrics: List[RequestMetric],
+        npu_metrics: List[NpuMetric],
+    ) -> None:
+        self.output_dir = output_dir
+        self.request_metrics = request_metrics
+        self.npu_metrics = npu_metrics
+
+    def write_csv(self) -> None:
+        ensure_dir(self.output_dir)
+
+        request_csv = self.output_dir / "request_metrics.csv"
+        with request_csv.open("w", newline="", encoding="utf-8") as file:
+            fieldnames = [
+                "request_index",
+                "scenario_name",
+                "uid",
+                "history_len",
+                "start_ts_ms",
+                "end_ts_ms",
+                "latency_ms",
+                "status",
+                "success",
+                "request_bytes",
+                "response_bytes",
+                "error",
+            ]
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writeheader()
+            for item in self.request_metrics:
+                writer.writerow(asdict(item))
+
+        npu_csv = self.output_dir / "npu_metrics.csv"
+        with npu_csv.open("w", newline="", encoding="utf-8") as file:
+            fieldnames = [
+                "ts_ms",
+                "device_id",
+                "used_mb",
+                "total_mb",
+                "utilization_pct",
+                "raw",
+            ]
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writeheader()
+            for item in self.npu_metrics:
+                writer.writerow(asdict(item))
+
+    def summarize(self) -> Dict[str, Any]:
+        """
+        计算总体指标。
+
+        当前重点包括：
+        1. 吞吐量 QPS
+        2. 平均延迟和 P50/P90/P95/P99
+        3. 成功率
+        4. 平均请求大小
+        5. NPU 显存占用区间
+        """
+        if not self.request_metrics:
+            return {
+                "total_requests": 0,
+                "success_rate_pct": 0.0,
+                "throughput_qps": 0.0,
+                "avg_latency_ms": 0.0,
+                "p50_latency_ms": 0.0,
+                "p90_latency_ms": 0.0,
+                "p95_latency_ms": 0.0,
+                "p99_latency_ms": 0.0,
+                "max_latency_ms": 0.0,
+                "avg_history_len": 0.0,
+                "avg_request_bytes": 0.0,
+                "avg_response_bytes": 0.0,
+                "npu_used_mb_min": None,
+                "npu_used_mb_avg": None,
+                "npu_used_mb_max": None,
+                "npu_total_mb": None,
+            }
+
+        latencies = [item.latency_ms for item in self.request_metrics]
+        histories = [item.history_len for item in self.request_metrics]
+        successes = [item.success for item in self.request_metrics]
+        request_sizes = [item.request_bytes for item in self.request_metrics]
+        response_sizes = [item.response_bytes for item in self.request_metrics]
+
+        start_ts = min(item.start_ts_ms for item in self.request_metrics)
+        end_ts = max(item.end_ts_ms for item in self.request_metrics)
+        wall_time_sec = max((end_ts - start_ts) / 1000.0, 0.001)
+
+        npu_used_values = [item.used_mb for item in self.npu_metrics if item.used_mb is not None]
+        npu_total_values = [item.total_mb for item in self.npu_metrics if item.total_mb is not None]
+
+        return {
+            "total_requests": len(self.request_metrics),
+            "success_rate_pct": round(sum(successes) / len(successes) * 100, 2),
+            "throughput_qps": round(len(self.request_metrics) / wall_time_sec, 2),
+            "avg_latency_ms": round(statistics.mean(latencies), 2),
+            "p50_latency_ms": round(percentile(latencies, 50), 2),
+            "p90_latency_ms": round(percentile(latencies, 90), 2),
+            "p95_latency_ms": round(percentile(latencies, 95), 2),
+            "p99_latency_ms": round(percentile(latencies, 99), 2),
+            "max_latency_ms": round(max(latencies), 2),
+            "avg_history_len": round(statistics.mean(histories), 2),
+            "avg_request_bytes": round(statistics.mean(request_sizes), 2),
+            "avg_response_bytes": round(statistics.mean(response_sizes), 2),
+            "npu_used_mb_min": min(npu_used_values) if npu_used_values else None,
+            "npu_used_mb_avg": round(statistics.mean(npu_used_values), 2) if npu_used_values else None,
+            "npu_used_mb_max": max(npu_used_values) if npu_used_values else None,
+            "npu_total_mb": max(npu_total_values) if npu_total_values else None,
+        }
+
+    def summarize_by_scenario(self) -> List[Dict[str, Any]]:
+        """
+        按场景分组统计，便于对比不同 history 长度带来的性能差异。
+        """
+        grouped: Dict[str, List[RequestMetric]] = {}
+
+        for item in self.request_metrics:
+            grouped.setdefault(item.scenario_name, []).append(item)
+
+        scenario_rows: List[Dict[str, Any]] = []
+        for scenario_name, items in grouped.items():
+            latencies = [item.latency_ms for item in items]
+            successes = [item.success for item in items]
+            histories = [item.history_len for item in items]
+
+            start_ts = min(item.start_ts_ms for item in items)
+            end_ts = max(item.end_ts_ms for item in items)
+            wall_time_sec = max((end_ts - start_ts) / 1000.0, 0.001)
+
+            scenario_rows.append(
+                {
+                    "scenario_name": scenario_name,
+                    "total_requests": len(items),
+                    "success_rate_pct": round(sum(successes) / len(successes) * 100, 2),
+                    "throughput_qps": round(len(items) / wall_time_sec, 2),
+                    "avg_latency_ms": round(statistics.mean(latencies), 2),
+                    "p95_latency_ms": round(percentile(latencies, 95), 2),
+                    "p99_latency_ms": round(percentile(latencies, 99), 2),
+                    "avg_history_len": round(statistics.mean(histories), 2),
+                }
+            )
+
+        scenario_rows.sort(key=lambda item: item["scenario_name"])
+        return scenario_rows
+
+    def write_summary_csv(self, summary: Dict[str, Any]) -> None:
+        summary_csv = self.output_dir / "summary.csv"
+        with summary_csv.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=list(summary.keys()))
+            writer.writeheader()
+            writer.writerow(summary)
+
+    def write_scenario_summary_csv(self, rows: List[Dict[str, Any]]) -> None:
+        scenario_csv = self.output_dir / "scenario_summary.csv"
+        with scenario_csv.open("w", newline="", encoding="utf-8") as file:
+            fieldnames = [
+                "scenario_name",
+                "total_requests",
+                "success_rate_pct",
+                "throughput_qps",
+                "avg_latency_ms",
+                "p95_latency_ms",
+                "p99_latency_ms",
+                "avg_history_len",
+            ]
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+    def print_summary(self, summary: Dict[str, Any], scenario_rows: List[Dict[str, Any]]) -> None:
+        total_rows = [
+            ["total_requests", summary["total_requests"]],
+            ["success_rate_pct", summary["success_rate_pct"]],
+            ["throughput_qps", summary["throughput_qps"]],
+            ["avg_latency_ms", summary["avg_latency_ms"]],
+            ["p50_latency_ms", summary["p50_latency_ms"]],
+            ["p90_latency_ms", summary["p90_latency_ms"]],
+            ["p95_latency_ms", summary["p95_latency_ms"]],
+            ["p99_latency_ms", summary["p99_latency_ms"]],
+            ["max_latency_ms", summary["max_latency_ms"]],
+            ["avg_history_len", summary["avg_history_len"]],
+            ["avg_request_bytes", summary["avg_request_bytes"]],
+            ["avg_response_bytes", summary["avg_response_bytes"]],
+            ["npu_used_mb_min", summary["npu_used_mb_min"]],
+            ["npu_used_mb_avg", summary["npu_used_mb_avg"]],
+            ["npu_used_mb_max", summary["npu_used_mb_max"]],
+            ["npu_total_mb", summary["npu_total_mb"]],
+        ]
+
+        print("\n=== Overall Summary ===")
+        print_table(["metric", "value"], total_rows)
+
+        if scenario_rows:
+            print("\n=== Scenario Summary ===")
+            rows = []
+            for item in scenario_rows:
+                rows.append(
+                    [
+                        item["scenario_name"],
+                        item["total_requests"],
+                        item["success_rate_pct"],
+                        item["throughput_qps"],
+                        item["avg_latency_ms"],
+                        item["p95_latency_ms"],
+                        item["p99_latency_ms"],
+                        item["avg_history_len"],
+                    ]
+                )
+            print_table(
+                [
+                    "scenario",
+                    "total",
+                    "success_rate_pct",
+                    "qps",
+                    "avg_latency_ms",
+                    "p95_latency_ms",
+                    "p99_latency_ms",
+                    "avg_history_len",
+                ],
+                rows,
+            )
+
+
+# =========================
+# 主流程编排区
+# =========================
+
+async def main_async(args: argparse.Namespace) -> None:
+    """
+    主流程：
+    1. 生成请求
+    2. 启动 NPU 采样
+    3. 发起并发压测
+    4. 输出总体结果和分场景结果
+    """
+    base_dir = Path(args.output_dir).resolve()
+    requests_dir = base_dir / "requests"
+    reports_dir = base_dir / "reports"
+
+    ensure_dir(base_dir)
+    ensure_dir(requests_dir)
+    ensure_dir(reports_dir)
+
+    metadata_template = {}
+    if args.metadata_file:
+        with open(args.metadata_file, "r", encoding="utf-8") as file:
+            metadata_template = json.load(file)
+
+    generator = RequestGenerator(
+        output_dir=requests_dir,
+        total_requests=args.total_requests,
+        seed=args.seed,
+        metadata_template=metadata_template,
+    )
+    generated_files = generator.generate()
+    print(f"generated_requests={len(generated_files)}")
+    print(f"requests_dir={requests_dir}")
+
+    headers = {"Content-Type": "application/json"}
+    if args.auth_token:
+        headers["Authorization"] = f"Bearer {args.auth_token}"
+
+    sampler = AscendNpuSampler(
+        device_id=args.npu_device_id,
+        interval_sec=args.npu_sample_interval_sec,
+        enabled=not args.disable_npu_sampler,
+        command=args.npu_command,
+    )
+
+    tester = LoadTester(
+        endpoint=args.endpoint,
+        headers=headers,
+        concurrency=args.concurrency,
+        timeout_sec=args.timeout_sec,
+        requests_dir=requests_dir,
+    )
+
+    sampler_task = asyncio.create_task(sampler.run()) if not args.disable_npu_sampler else None
+
+    try:
+        request_metrics = await tester.run()
+    finally:
+        sampler.stop()
+        if sampler_task is not None:
+            await sampler_task
+
+    reporter = ReportWriter(
+        output_dir=reports_dir,
+        request_metrics=request_metrics,
+        npu_metrics=sampler.records,
+    )
+    reporter.write_csv()
+
+    summary = reporter.summarize()
+    scenario_rows = reporter.summarize_by_scenario()
+
+    reporter.write_summary_csv(summary)
+    reporter.write_scenario_summary_csv(scenario_rows)
+    reporter.print_summary(summary, scenario_rows)
+
+    print("\n=== Output Files ===")
+    print(f"request_metrics_csv: {reports_dir / 'request_metrics.csv'}")
+    print(f"npu_metrics_csv:     {reports_dir / 'npu_metrics.csv'}")
+    print(f"summary_csv:         {reports_dir / 'summary.csv'}")
+    print(f"scenario_summary:    {reports_dir / 'scenario_summary.csv'}")
+
+
+# =========================
+# 参数入口区
+# =========================
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Inference service performance test tool")
+
+    parser.add_argument("--endpoint", required=True, help="外层推理服务 HTTP 地址")
+    parser.add_argument("--output-dir", default="./perf_output", help="输出目录")
+    parser.add_argument("--total-requests", type=int, default=300, help="生成并发送的总请求数")
+    parser.add_argument("--concurrency", type=int, default=20, help="并发请求数")
+    parser.add_argument("--timeout-sec", type=float, default=10.0, help="HTTP 超时时间，单位秒")
+    parser.add_argument("--seed", type=int, default=20260720, help="随机种子，便于复现实验")
+    parser.add_argument("--auth-token", default="", help="可选 Bearer Token")
+    parser.add_argument("--metadata-file", default="", help="固定 _metadata 模板文件")
+
+    parser.add_argument("--disable-npu-sampler", action="store_true", help="关闭 Ascend NPU 指标采样")
+    parser.add_argument("--npu-device-id", default="0", help="Ascend 设备号")
+    parser.add_argument("--npu-sample-interval-sec", type=float, default=1.0, help="NPU 采样周期")
+    parser.add_argument("--npu-command", default="npu-smi info", help="NPU 采样命令")
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    asyncio.run(main_async(args))
+
+
+if __name__ == "__main__":
+    '''python test_infer_performance.py \
+  --endpoint http://127.0.0.1:8080/infer \
+  --total-requests 600 \
+  --concurrency 50 \
+  --output-dir ./perf_run_01'''
+    main()
