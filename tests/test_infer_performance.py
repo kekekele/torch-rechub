@@ -122,23 +122,57 @@ class RequestGenerator:
         output_dir: Path,
         total_requests: int,
         seed: int,
+        minlen: int,
+        maxlen: int,
         metadata_template: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.output_dir = output_dir
         self.total_requests = total_requests
         self.seed = seed
+        self.minlen = minlen
+        self.maxlen = maxlen
         self.metadata_template = metadata_template or {}
         random.seed(seed)
 
     def scenario_pool(self) -> List[Dict[str, Any]]:
         """
-        当前按照 history 长度定义 3 类场景。
+        按 [minlen, maxlen] 动态切分 3 类场景。
+
+        例如 minlen=1, maxlen=600 时，会拆成：
+        1. light: 1 ~ 200
+        2. medium: 201 ~ 400
+        3. heavy: 401 ~ 600
+
         如果后续要扩展更多请求变量，优先改这里。
         """
+        effective_minlen = min(self.minlen, self.maxlen)
+        effective_maxlen = max(self.minlen, self.maxlen)
+        total_span = effective_maxlen - effective_minlen + 1
+        tier_size = max(1, math.ceil(total_span / 3))
+
+        light_min = effective_minlen
+        light_max = min(effective_maxlen, light_min + tier_size - 1)
+        medium_min = min(effective_maxlen, light_max + 1)
+        medium_max = min(effective_maxlen, medium_min + tier_size - 1)
+        heavy_min = min(effective_maxlen, medium_max + 1)
+        heavy_max = effective_maxlen
+
         return [
-            {"scenario_name": "light", "history_min": 5, "history_max": 10},
-            {"scenario_name": "medium", "history_min": 20, "history_max": 50},
-            {"scenario_name": "heavy", "history_min": 100, "history_max": 200},
+            {
+                "scenario_name": "light",
+                "history_min": light_min,
+                "history_max": max(light_min, light_max),
+            },
+            {
+                "scenario_name": "medium",
+                "history_min": max(light_min, medium_min),
+                "history_max": max(max(light_min, medium_min), medium_max),
+            },
+            {
+                "scenario_name": "heavy",
+                "history_min": max(light_min, heavy_min),
+                "history_max": max(max(light_min, heavy_min), heavy_max),
+            },
         ]
 
     def build_history(
@@ -1045,6 +1079,8 @@ async def main_async(args: argparse.Namespace) -> None:
         output_dir=requests_dir,
         total_requests=args.total_requests,
         seed=args.seed,
+        minlen=args.minlen,
+        maxlen=args.maxlen,
         metadata_template=metadata_template,
     )
     generated_files = generator.generate()
@@ -1119,6 +1155,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="./perf_output", help="输出目录")
     parser.add_argument(
         "--total-requests", type=int, default=300, help="生成并发送的总请求数"
+    )
+    parser.add_argument(
+        "--minlen",
+        type=int,
+        default=1,
+        help="history 最小长度；脚本会按 [minlen, maxlen] 动态切成 light/medium/heavy 三档",
+    )
+    parser.add_argument(
+        "--maxlen",
+        type=int,
+        default=200,
+        help="history 最大长度；脚本会按 [minlen, maxlen] 动态切成 light/medium/heavy 三档",
     )
     parser.add_argument("--concurrency", type=int, default=20, help="并发请求数")
     parser.add_argument(
