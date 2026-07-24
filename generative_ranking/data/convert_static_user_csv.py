@@ -80,33 +80,31 @@ def build_user_table(normalized_rows, feature_columns):
 
 def build_sequence_table(normalized_rows):
     seq_rows = []
-    item_rows = []
+    fixed_iid = 1
+    fixed_timestamp = 0
     for row in normalized_rows:
-        iid = row["row_number"]
-        timestamp = row["row_number"]
         seq_rows.append(
             {
                 "uid": row["uid"],
-                "iid": iid,
-                "timestamp": timestamp,
+                "iid": fixed_iid,
+                "timestamp": fixed_timestamp,
                 "label": row["label"],
             }
         )
-        item_rows.append({"iid": iid})
 
     seq_table = pd.DataFrame(seq_rows)
-    item_table = pd.DataFrame(item_rows).drop_duplicates(subset=["iid"])
+    item_table = pd.DataFrame([{"iid": fixed_iid}])
     return seq_table, item_table
 
 
 def build_format_rows(user_table, seq_table, item_table):
     rows = []
     for column in user_table.columns:
-        rows.append(("user_info.csv", column, "int64", "false"))
+        rows.append(("user_info.csv", column, "int", "false"))
     for column in item_table.columns:
-        rows.append(("item_fea.csv", column, "int64", "false"))
+        rows.append(("item_fea.csv", column, "int", "false"))
     for column in seq_table.columns:
-        rows.append(("seq.csv", column, "int64", "false"))
+        rows.append(("seq.csv", column, "int", "false"))
     return rows
 
 
@@ -153,7 +151,7 @@ def main():
     print(f"Wrote {len(seq_table)} interactions to {output_dir / 'seq.csv'}")
     print(f"Wrote format metadata to {output_dir / 'data_format.csv'}")
     print(
-        "Note: iid and timestamp are synthetic placeholders for format conversion only."
+        "Note: iid=1 and timestamp=0 are fixed placeholders for format conversion only."
     )
 
 
