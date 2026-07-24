@@ -162,27 +162,13 @@ def load_static_feature_data(train_path, test_path, seed, val_ratio):
     if not 0 <= val_ratio < 1:
         raise ValueError(f"val_ratio must be in [0, 1), got {val_ratio}")
 
-    if val_ratio > 0:
-        train_part, val_part = train_test_split(
-            encoded_train,
-            test_size=val_ratio,
-            random_state=seed,
-            stratify=encoded_train["label"],
-        )
-    else:
-        train_part = encoded_train
-        val_part = None
-
+    train_part = encoded_train
     x_train = dataframe_to_input_dict(train_part, feature_columns)
     y_train = train_part["label"].to_numpy(dtype=np.float32)
-    if val_part is not None:
-        x_val = dataframe_to_input_dict(val_part, feature_columns)
-        y_val = val_part["label"].to_numpy(dtype=np.float32)
-    else:
-        x_val = None
-        y_val = None
     x_test = dataframe_to_input_dict(encoded_test, feature_columns)
     y_test = encoded_test["label"].to_numpy(dtype=np.float32)
+    x_val = x_test
+    y_val = y_test
 
     return feature_defs, x_train, y_train, x_val, y_val, x_test, y_test
 
