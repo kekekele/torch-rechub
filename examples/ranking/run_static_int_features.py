@@ -16,6 +16,58 @@ from torch_rechub.utils.data import DataGenerator, TorchDataset
 sys.path.append("../..")
 
 
+class VerboseCTRTrainer(CTRTrainer):
+    def fit(self, train_dataloader, val_dataloader=None):
+        for logger in self._iter_loggers():
+            logger.log_hyperparams(
+                {
+                    "n_epoch": self.n_epoch,
+                    "learning_rate": self.optimizer.param_groups[0]["lr"],
+                    "loss_mode": self.loss_mode,
+                }
+            )
+
+        for epoch_i in range(self.n_epoch):
+            print(f"epoch: {epoch_i}")
+            train_loss = self.train_one_epoch(train_dataloader)
+            print(f"epoch: {epoch_i} train loss: {train_loss:.6f}")
+
+            for logger in self._iter_loggers():
+                logger.log_metrics(
+                    {
+                        "train/loss": train_loss,
+                        "learning_rate": self.optimizer.param_groups[0]["lr"],
+                    },
+                    step=epoch_i,
+                )
+
+            if self.scheduler is not None:
+                if epoch_i % self.scheduler.step_size == 0:
+                    print(
+                        "Current lr : {}".format(
+                            self.optimizer.state_dict()["param_groups"][0]["lr"]
+                        )
+                    )
+                self.scheduler.step()
+
+            if val_dataloader:
+                auc = self.evaluate(self.model, val_dataloader)
+                print(f"epoch: {epoch_i} validation: auc: {auc}")
+
+                for logger in self._iter_loggers():
+                    logger.log_metrics({"val/auc": auc}, step=epoch_i)
+
+                if self.early_stopper.stop_training(auc, self.model.state_dict()):
+                    print(f"validation: best auc: {self.early_stopper.best_auc}")
+                    self.model.load_state_dict(self.early_stopper.best_weights)
+                    break
+
+        torch.save(self.model.state_dict(), os.path.join(self.model_path, "model.pth"))
+
+        for logger in self._iter_loggers():
+            logger.finish()
+
+
 def parse_kv_text(text):
     if pd.isna(text):
         return []
@@ -237,7 +289,7 @@ def main(
     )
 
     model = build_model(model_name, features)
-    trainer = CTRTrainer(
+    trainer = VerboseCTRTrainer(
         model,
         optimizer_params={"lr": learning_rate, "weight_decay": weight_decay},
         n_epoch=epoch,
