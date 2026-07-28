@@ -1,0 +1,127 @@
+{
+    "data_dir": "projects/ranking_taobao_adx1/outputs/rankmixer/data",
+    "save_dir": "projects/ranking_taobao_adx1/outputs/rankmixer/checkpoints",
+    "device": "cuda:0",
+    "seed": 2026,
+    "num_workers": 0,
+    "training": {
+        "epoch": 30,
+        "batch_size": 1024,
+        "learning_rate": 0.001,
+        "weight_decay": 0.00001,
+        "earlystop_patience": 3,
+        "train_split": "train",
+        "valid_split": "valid"
+    },
+    "regularization": {
+        "embedding_l1": 0.0,
+        "embedding_l2": 0.0,
+        "dense_l1": 0.0,
+        "dense_l2": 0.0
+    },
+    "rankmixer": {
+        "d_model": 64,
+        "num_layers": 2,
+        "ffn_mult": 2,
+        "ln_style": "pre",
+        "use_final_ln": true,
+        "output_pooling": "mean",
+        "add_cls_token": false,
+        "use_input_ln": true,
+        "seq_pool_modes": [],
+        "history_summary_modes": [
+            "mean"
+        ],
+        "ordered_blocks": [
+            {
+                "name": "user",
+                "num_tokens": 2,
+                "features": [
+                    {
+                        "name": "user.cms_group_id",
+                        "dim": 8
+                    },
+                    {
+                        "name": "user.final_gender_code",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.age_level",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.shopping_level",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.occupation",
+                        "dim": 4
+                    }
+                ]
+            },
+            {
+                "name": "history",
+                "num_tokens": 2,
+                "features": [
+                    {
+                        "name": "seq.iid",
+                        "dim": 32
+                    },
+                    {
+                        "name": "item.cate_id",
+                        "dim": 16
+                    }
+                ]
+            },
+            {
+                "name": "context",
+                "num_tokens": 2,
+                "features": [
+                    {
+                        "name": "seq.pid",
+                        "dim": 8
+                    },
+                    {
+                        "name": "seq.btag_his",
+                        "dim": 8
+                    },
+                    {
+                        "name": "seq.cate_his",
+                        "dim": 16
+                    },
+                    {
+                        "name": "seq.brand_his",
+                        "dim": 16
+                    }
+                ]
+            },
+            {
+                "name": "target",
+                "num_tokens": 2,
+                "features": [
+                    {
+                        "name": "item.iid",
+                        "dim": 32
+                    },
+                    {
+                        "name": "item.cate_id",
+                        "dim": 8
+                    },
+                    {
+                        "name": "item.brand",
+                        "dim": 8
+                    },
+                    {
+                        "name": "item.customer",
+                        "dim": 8
+                    }
+                ]
+            }
+        ],
+        "use_moe": false,
+        "input_dropout": 0.15,
+        "token_mixing_dropout": 0.15,
+        "ffn_dropout": 0.15,
+        "head_dropout": 0.2
+    }
+}

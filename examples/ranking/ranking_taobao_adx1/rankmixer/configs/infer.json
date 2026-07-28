@@ -1,0 +1,11 @@
+{
+    "data_dir": "projects/ranking_taobao_adx1/outputs/rankmixer/data",
+    "save_dir": "projects/ranking_taobao_adx1/outputs/rankmixer/checkpoints",
+    "checkpoint": "projects/ranking_taobao_adx1/outputs/rankmixer/checkpoints/best.pth",
+    "device": "cuda:0",
+    "seed": 2026,
+    "training": {
+        "batch_size": 1024
+    },
+    "eval_split": "test"
+}

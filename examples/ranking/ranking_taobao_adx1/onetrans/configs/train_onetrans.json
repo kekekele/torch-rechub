@@ -1,0 +1,126 @@
+{
+    "data_dir": "projects/ranking_taobao_adx1/outputs/onetrans/data",
+    "save_dir": "projects/ranking_taobao_adx1/outputs/onetrans/checkpoints",
+    "device": "cuda:0",
+    "seed": 2026,
+    "num_workers": 0,
+    "training": {
+        "epoch": 30,
+        "batch_size": 1024,
+        "learning_rate": 0.001,
+        "weight_decay": 0.00001,
+        "earlystop_patience": 3,
+        "train_split": "train",
+        "valid_split": "valid"
+    },
+    "regularization": {
+        "embedding_l1": 0.0,
+        "embedding_l2": 0.0,
+        "dense_l1": 0.0,
+        "dense_l2": 0.0
+    },
+    "onetrans": {
+        "s_tokenizer": {
+            "use_sep_token": false,
+            "sequences": [
+                {
+                    "name": "history",
+                    "features": [
+                        {
+                            "name": "seq.iid",
+                            "dim": 32
+                        },
+                        {
+                            "name": "item.cate_id",
+                            "dim": 16
+                        }
+                    ]
+                }
+            ]
+        },
+        "ns_tokenizer": {
+            "type": "group_wise",
+            "groups": [
+                {
+                    "name": "user",
+                    "num_tokens": 2,
+                    "features": [
+                        {
+                            "name": "user.cms_group_id",
+                            "dim": 8
+                        },
+                        {
+                            "name": "user.final_gender_code",
+                            "dim": 4
+                        },
+                        {
+                            "name": "user.age_level",
+                            "dim": 4
+                        },
+                        {
+                            "name": "user.shopping_level",
+                            "dim": 4
+                        },
+                        {
+                            "name": "user.occupation",
+                            "dim": 4
+                        }
+                    ]
+                },
+                {
+                    "name": "target",
+                    "num_tokens": 1,
+                    "features": [
+                        {
+                            "name": "item.iid",
+                            "dim": 32
+                        },
+                        {
+                            "name": "item.cate_id",
+                            "dim": 8
+                        },
+                        {
+                            "name": "item.brand",
+                            "dim": 8
+                        },
+                        {
+                            "name": "item.customer",
+                            "dim": 8
+                        }
+                    ]
+                },
+                {
+                    "name": "context",
+                    "num_tokens": 1,
+                    "features": [
+                        {
+                            "name": "seq.pid",
+                            "dim": 8
+                        },
+                        {
+                            "name": "seq.btag_his",
+                            "dim": 8
+                        },
+                        {
+                            "name": "seq.cate_his",
+                            "dim": 16
+                        },
+                        {
+                            "name": "seq.brand_his",
+                            "dim": 16
+                        }
+                    ]
+                }
+            ]
+        },
+        "d_model": 64,
+        "num_heads": 4,
+        "ffn_hidden": 128,
+        "blocks_per_stage": 1,
+        "num_pyramid_layers": 3,
+        "pyramid_align": 16,
+        "mask_type": "causal",
+        "use_checkpoint": false,
+        "head_dropout": 0.2
+    }
+}
