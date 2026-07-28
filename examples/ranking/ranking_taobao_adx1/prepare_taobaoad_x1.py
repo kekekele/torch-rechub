@@ -360,7 +360,7 @@ def _fallback_timestamps(
         raw_uid = str(uid)
         state[raw_uid] += 1
         values.append(offset + state[raw_uid])
-    return pd.Series(values, dtype="int64")
+    return pd.Series(values, index=uids.index, dtype="int64")
 
 
 def _make_action(df: pd.DataFrame, column_map: dict[str, str | None]) -> pd.Series:
@@ -481,6 +481,34 @@ def _append_seq_csv(path: Path, seq: pd.DataFrame, write_header: bool) -> None:
     )
 
 
+def _assert_valid_seq_timestamps(
+    seq: pd.DataFrame, split_source: str, chunk_count: int
+) -> None:
+    if "timestamp" not in seq.columns:
+        raise ValueError(
+            f"seq chunk missing timestamp column: split={split_source}, chunk={chunk_count}"
+        )
+
+    numeric_ts = pd.to_numeric(seq["timestamp"], errors="coerce")
+    invalid_mask = numeric_ts.isna()
+    if not bool(invalid_mask.any()):
+        return
+
+    invalid_rows = seq.loc[
+        invalid_mask,
+        [
+            col
+            for col in ["uid", "iid", "timestamp", "split_source"]
+            if col in seq.columns
+        ],
+    ].head(5)
+    raise ValueError(
+        "Invalid timestamp values detected before writing seq.csv: "
+        f"split={split_source}, chunk={chunk_count}, invalid_rows={int(invalid_mask.sum())}. "
+        f"Examples: {invalid_rows.to_dict(orient='records')}"
+    )
+
+
 def _write_side_tables(
     output_dir: Path,
     users: dict[str, tuple[int, dict[str, Any]]],
@@ -565,6 +593,7 @@ def _process_file(
         seq = _build_seq_frame(
             chunk, column_map, split_source, fallback_state, timestamp_offset
         )
+        _assert_valid_seq_timestamps(seq, split_source, chunk_count)
         _append_seq_csv(seq_path, seq, write_header)
         write_header = False
 

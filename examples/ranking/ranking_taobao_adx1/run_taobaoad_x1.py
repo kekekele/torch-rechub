@@ -17,19 +17,19 @@ DEFAULT_OUTPUT_DIR = PROJECT_DIR / "outputs" / "benchmark"
 MODEL_SPECS = {
     "dcn_v2": {
         "package": "reckit.ranking.dcn_v2",
-        "train_file": "train_dcn_v2.json",
+        "train_config": PROJECT_DIR / "dcn_v2" / "configs" / "train_dcn_v2.json",
         "data_config": PROJECT_DIR / "dcn_v2" / "configs" / "data.json",
         "config_dir": PROJECT_DIR / "dcn_v2" / "configs",
     },
     "rankmixer": {
         "package": "reckit.ranking.rankmixer",
-        "train_file": "train_rankmixer.json",
+        "train_config": PROJECT_DIR / "rankmixer" / "configs" / "train_rankmixer.json",
         "data_config": PROJECT_DIR / "rankmixer" / "configs" / "data.json",
         "config_dir": PROJECT_DIR / "rankmixer" / "configs",
     },
     "onetrans": {
         "package": "reckit.ranking.onetrans",
-        "train_file": "train_onetrans.json",
+        "train_config": PROJECT_DIR / "onetrans" / "configs" / "train_onetrans.json",
         "data_config": PROJECT_DIR / "onetrans" / "configs" / "data.json",
         "config_dir": PROJECT_DIR / "onetrans" / "configs",
     },
@@ -67,13 +67,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-
-
 def _run_command(cmd: list[str], cwd: Path, log_path: Path) -> str:
     _log(f"run command: {' '.join(cmd)}")
     _log(f"write command log: {log_path}")
@@ -104,40 +97,13 @@ def _extract_json_object(output: str) -> dict[str, Any]:
     return json.loads(output[start:])
 
 
-def _build_runtime_configs(
-    model: str, seed: int, device: str, output_dir: Path
-) -> Path:
+def _model_train_checkpoint_path(model: str) -> Path:
     spec = MODEL_SPECS[model]
-    base_cfg_dir = Path(spec["config_dir"])
-    runtime_dir = output_dir / "runtime_configs" / model / f"seed_{seed}"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-
-    train_name = str(spec["train_file"])
-    base_train = _read_json(base_cfg_dir / train_name)
-    base_infer = _read_json(base_cfg_dir / "infer.json")
-    base_data = _read_json(Path(spec["data_config"]))
-
-    data_dir = str(base_data["output_dir"])
-    save_dir = output_dir / model / f"seed_{seed}" / "checkpoints"
-
-    train_cfg = dict(base_train)
-    train_cfg["data_dir"] = data_dir
-    train_cfg["save_dir"] = str(save_dir)
-    train_cfg["device"] = device
-    train_cfg["seed"] = int(seed)
-
-    infer_cfg = dict(base_infer)
-    infer_cfg["data_dir"] = data_dir
-    infer_cfg["save_dir"] = str(save_dir)
-    infer_cfg["checkpoint"] = str(save_dir / "best.pth")
-    infer_cfg["device"] = device
-    infer_cfg["seed"] = int(seed)
-
-    _write_json(runtime_dir / train_name, train_cfg)
-    _write_json(runtime_dir / "infer.json", infer_cfg)
-    _write_json(runtime_dir / "data.json", base_data)
-    _log(f"prepared runtime configs for model={model}, seed={seed}: {runtime_dir}")
-    return runtime_dir
+    train_cfg = _read_json(Path(spec["train_config"]))
+    save_dir = train_cfg.get("save_dir")
+    if not save_dir:
+        raise ValueError(f"Missing save_dir in train config for model={model}")
+    return Path(str(save_dir)) / "best.pth"
 
 
 def _process_model(model: str, args: argparse.Namespace, output_dir: Path) -> None:
@@ -170,10 +136,10 @@ def _process_model(model: str, args: argparse.Namespace, output_dir: Path) -> No
 
 
 def _train_model(
-    model: str, runtime_dir: Path, seed: int, args: argparse.Namespace, output_dir: Path
+    model: str, seed: int, args: argparse.Namespace, output_dir: Path
 ) -> Path:
     spec = MODEL_SPECS[model]
-    checkpoint = Path(_read_json(runtime_dir / "infer.json")["checkpoint"])
+    checkpoint = _model_train_checkpoint_path(model)
     if args.skip_train:
         _log(f"skip train for model={model}, seed={seed} due to --skip-train")
         return checkpoint
@@ -201,7 +167,6 @@ def _train_model(
 
 def _evaluate_model(
     model: str,
-    runtime_dir: Path,
     seed: int,
     split: str,
     args: argparse.Namespace,
@@ -304,17 +269,14 @@ def main() -> None:
         _process_model(model, args, output_dir)
         for seed in args.seeds:
             _log(f"start seed loop: model={model}, seed={seed}")
-            runtime_dir = _build_runtime_configs(
-                model, int(seed), args.device, output_dir
-            )
-            checkpoint = _train_model(model, runtime_dir, int(seed), args, output_dir)
+            checkpoint = _train_model(model, int(seed), args, output_dir)
             if not checkpoint.exists():
                 raise FileNotFoundError(
-                    f"Checkpoint missing for model={model}, seed={seed}: {checkpoint}"
+                    f"Training checkpoint missing for model={model}, seed={seed}: {checkpoint}"
                 )
             for split in args.eval_splits:
                 metrics = _evaluate_model(
-                    model, runtime_dir, int(seed), str(split), args, output_dir
+                    model, int(seed), str(split), args, output_dir
                 )
                 rows.append(
                     {"model": model, "seed": int(seed), "split": str(split), **metrics}
