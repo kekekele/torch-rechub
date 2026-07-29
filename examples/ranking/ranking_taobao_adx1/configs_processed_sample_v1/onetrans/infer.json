@@ -1,0 +1,11 @@
+{
+    "data_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v1/onetrans/data",
+    "save_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v1/onetrans/checkpoints",
+    "checkpoint": "projects/ranking_taobao_adx1/outputs_processed_sample_v1/onetrans/checkpoints/best.pth",
+    "device": "cuda:0",
+    "seed": 2028,
+    "training": {
+        "batch_size": 512
+    },
+    "eval_split": "test"
+}

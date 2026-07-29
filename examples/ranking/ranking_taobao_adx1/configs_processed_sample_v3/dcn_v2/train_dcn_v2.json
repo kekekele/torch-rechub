@@ -1,0 +1,44 @@
+{
+    "data_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v3/dcn_v2/data",
+    "save_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v3/dcn_v2/checkpoints",
+    "device": "cuda:0",
+    "seed": 2028,
+    "embedding_dim": 16,
+    "num_workers": 0,
+    "training": {
+        "epoch": 30,
+        "batch_size": 1024,
+        "learning_rate": 0.0008,
+        "weight_decay": 0.00005,
+        "earlystop_patience": 2,
+        "reduce_lr_on_plateau": true,
+        "lr_decay_factor": 0.7,
+        "min_lr": 0.000001,
+        "monitor_metric": "auc",
+        "monitor_mode": "max",
+        "save_best_only": true,
+        "train_split": "train",
+        "valid_split": "valid"
+    },
+    "regularization": {
+        "embedding_l1": 0.0,
+        "embedding_l2": 0.0,
+        "dense_l1": 0.0,
+        "dense_l2": 0.0
+    },
+    "dcn_v2": {
+        "n_cross_layers": 3,
+        "model_structure": "parallel",
+        "use_low_rank_mixture": true,
+        "low_rank": 16,
+        "num_experts": 4,
+        "mlp_params": {
+            "dims": [
+                256,
+                128
+            ],
+            "dropout": 0.25,
+            "activation": "relu"
+        }
+    }
+}

@@ -1,0 +1,43 @@
+{
+  "data_root": "data_preprocess/taobao_adx1/processed_sample",
+  "output_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v4/rankmixer/data",
+  "user_col": "uid",
+  "item_col": "iid",
+  "timestamp_col": "timestamp",
+  "label_col": "action",
+  "feature_columns": {
+    "user_info.csv": [
+      "cms_segid",
+      "cms_group_id",
+      "final_gender_code",
+      "age_level",
+      "pvalue_level",
+      "shopping_level",
+      "occupation",
+      "new_user_class_level"
+    ],
+    "item_fea.csv": [
+      "iid",
+      "cate_id",
+      "campaign_id",
+      "customer",
+      "brand",
+      "price"
+    ],
+    "seq.csv": [
+      "pid",
+      "btag_his",
+      "cate_his",
+      "brand_his"
+    ]
+  },
+  "sample_builder": {
+    "history_positive_only": true,
+    "min_history_len": 1,
+    "max_history_len": 50,
+    "split": {
+      "type": "global_time_ratio",
+      "ratios": [0.8, 0.1, 0.1]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+    "data_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v1/dcn_v2/data",
+    "save_dir": "projects/ranking_taobao_adx1/outputs_processed_sample_v1/dcn_v2/checkpoints",
+    "checkpoint": "projects/ranking_taobao_adx1/outputs_processed_sample_v1/dcn_v2/checkpoints/best.pth",
+    "device": "cuda:0",
+    "seed": 2028,
+    "embedding_dim": 12,
+    "training": {
+        "batch_size": 512
+    },
+    "eval_split": "test"
+}
