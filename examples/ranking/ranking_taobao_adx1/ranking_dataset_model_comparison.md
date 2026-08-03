@@ -121,6 +121,43 @@ TAAC2026 上 OneTrans 的优势更明显，说明在多用户、多物品、多�
 
 从 K-fold 汇总结果看，TaobaoAd_x1 在 blocked time 评估下的模型排序仍然是 `OneTrans > DCNv2 > RankMixer`。不过和 sample 单次切分相比，K-fold 更强调跨时间块平均表现，因此更适合作为模型相对排序的补充证据；如果后续 full-data pseudo-time 切分结果与这里不一致，应优先从切分语义和时间构造方式差异解释，而不是直接认定模型结论反转。
 
+### 6.5 AmazonElectronics_x1 与 TaobaoAd_x1 三模型最佳指标汇总
+
+为便于横向比较，这里只保留两个数据集上三个主模型的最佳 `Test AUC` 与 `Test Logloss`。其中 AmazonElectronics_x1 取 Fuxi 固定 test split 下各模型最佳版本；TaobaoAd_x1 取 sample 调参阶段各模型 `Test AUC` 最优版本。由于两个数据集的切分语义不同，下面的绝对值更适合做同一数据集内的模型排序对比，而不宜直接解读为跨数据集泛化强弱。
+
+| 数据集 | 模型 | 最佳版本 | Best Test AUC | Best Test Logloss |
+| --- | --- | --- | ---: | ---: |
+| AmazonElectronics_x1 | DCNv2 | default | **0.891124** | **0.421056** |
+| AmazonElectronics_x1 | RankMixer | v3 | 0.875315 | 0.522452 |
+| AmazonElectronics_x1 | OneTrans | default | 0.854598 | 0.503030 |
+| TaobaoAd_x1 | DCNv2 | `processed_sample_v3` | 0.525308 | 0.157070 |
+| TaobaoAd_x1 | RankMixer | `processed_sample_v1` | 0.523890 | 0.133369 |
+| TaobaoAd_x1 | OneTrans | `processed_sample_v1` | **0.546427** | **0.133150** |
+
+从 AUC 看，AmazonElectronics_x1 上的排序为 `DCNv2 > RankMixer > OneTrans`，而 TaobaoAd_x1 上的排序为 `OneTrans > DCNv2 > RankMixer`。从 Logloss 看，AmazonElectronics_x1 仍是 DCNv2 最优；TaobaoAd_x1 上则是 OneTrans 与 RankMixer 明显更低，且 OneTrans 以微弱优势最好。
+
+#### 6.5.1 Best Test AUC 柱状图
+
+```mermaid
+xychart-beta
+	title "AmazonElectronics_x1 vs TaobaoAd_x1 Best Test AUC"
+	x-axis [DCNv2, RankMixer, OneTrans]
+	y-axis "Test AUC" 0.50 --> 0.92
+	bar "AmazonElectronics_x1" [0.891124, 0.875315, 0.854598]
+	bar "TaobaoAd_x1" [0.525308, 0.523890, 0.546427]
+```
+
+#### 6.5.2 Best Test Logloss 柱状图
+
+```mermaid
+xychart-beta
+	title "AmazonElectronics_x1 vs TaobaoAd_x1 Best Test Logloss"
+	x-axis [DCNv2, RankMixer, OneTrans]
+	y-axis "Test Logloss" 0.10 --> 0.55
+	bar "AmazonElectronics_x1" [0.421056, 0.522452, 0.503030]
+	bar "TaobaoAd_x1" [0.157070, 0.133369, 0.133150]
+```
+
 ## 7. 跨数据集趋势总结
 
 | 观察角度 | Fuxi | TAAC2026 | 分析结论 |
