@@ -1,0 +1,141 @@
+{
+    "data_dir": "projects/ranking_taobao_ad/outputs/rankmixer/data",
+    "save_dir": "projects/ranking_taobao_ad/outputs/rankmixer/checkpoints",
+    "device": "cuda:0",
+    "seed": 2026,
+    "num_workers": 0,
+    "training": {
+        "epoch": 50,
+        "batch_size": 512,
+        "learning_rate": 0.0005,
+        "weight_decay": 0.0005,
+        "earlystop_patience": 4,
+        "train_split": "train",
+        "valid_split": "valid"
+    },
+    "regularization": {
+        "embedding_l1": 0.0,
+        "embedding_l2": 0.0,
+        "dense_l1": 0.0,
+        "dense_l2": 0.0
+    },
+    "rankmixer": {
+        "d_model": 64,
+        "num_layers": 2,
+        "ffn_mult": 2,
+        "ln_style": "pre",
+        "use_final_ln": true,
+        "output_pooling": "cls",
+        "add_cls_token": true,
+        "use_input_ln": true,
+        "seq_pool_modes": [],
+        "history_summary_modes": [
+            "mean",
+            "last",
+            "target_attention"
+        ],
+        "ordered_blocks": [
+            {
+                "name": "user",
+                "num_tokens": 4,
+                "features": [
+                    {
+                        "name": "user.cms_segid",
+                        "dim": 8
+                    },
+                    {
+                        "name": "user.cms_group_id",
+                        "dim": 8
+                    },
+                    {
+                        "name": "user.final_gender_code",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.age_level",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.pvalue_level",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.shopping_level",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.occupation",
+                        "dim": 4
+                    },
+                    {
+                        "name": "user.new_user_class_level",
+                        "dim": 4
+                    }
+                ]
+            },
+            {
+                "name": "history",
+                "num_tokens": 4,
+                "features": [
+                    {
+                        "name": "seq.iid",
+                        "dim": 32
+                    },
+                    {
+                        "name": "item.cate_id",
+                        "dim": 16
+                    },
+                    {
+                        "name": "item.brand",
+                        "dim": 8
+                    }
+                ]
+            },
+            {
+                "name": "context",
+                "num_tokens": 3,
+                "features": [
+                    {
+                        "name": "seq.pid",
+                        "dim": 8
+                    },
+                    {
+                        "name": "seq.timestamp",
+                        "dim": 4
+                    }
+                ]
+            },
+            {
+                "name": "target",
+                "num_tokens": 4,
+                "features": [
+                    {
+                        "name": "item.iid",
+                        "dim": 32
+                    },
+                    {
+                        "name": "item.cate_id",
+                        "dim": 16
+                    },
+                    {
+                        "name": "item.brand",
+                        "dim": 8
+                    },
+                    {
+                        "name": "item.customer",
+                        "dim": 8
+                    },
+                    {
+                        "name": "item.campaign_id",
+                        "dim": 8
+                    }
+                ]
+            }
+        ],
+        "use_moe": false,
+        "input_dropout": 0.2,
+        "token_mixing_dropout": 0.2,
+        "ffn_dropout": 0.2,
+        "head_dropout": 0.3
+    }
+}
